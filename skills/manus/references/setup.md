@@ -13,7 +13,7 @@ Optional local state lives under `~/.manus-skill/` by default. Override with `MA
 Set the script path:
 
 ```bash
-SCRIPT="<SKILL_DIR>/scripts/manus_client.py"
+SCRIPT="<SKILL_DIR>/scripts/manus_client.mjs"
 ```
 
 ## Polling Workflow
@@ -21,7 +21,7 @@ SCRIPT="<SKILL_DIR>/scripts/manus_client.py"
 ### Create a test task
 
 ```bash
-uv run "$SCRIPT" create \
+node "$SCRIPT" create \
   --prompt "What is 2+2? Reply with just the answer." \
   --mode chat \
   --profile manus-1.6-lite \
@@ -31,13 +31,13 @@ uv run "$SCRIPT" create \
 ### Check status
 
 ```bash
-uv run "$SCRIPT" status --task-id <task_id>
+node "$SCRIPT" status --task-id <task_id>
 ```
 
 ### Get result
 
 ```bash
-uv run "$SCRIPT" result --task-id <task_id>
+node "$SCRIPT" result --task-id <task_id>
 ```
 
 ## Webhook Workflow
@@ -68,7 +68,7 @@ The bundled `scripts/webhook-transform.mjs` is an optional helper that validates
 When `stop_reason` is `ask`:
 
 ```bash
-uv run "$SCRIPT" create \
+node "$SCRIPT" create \
   --task-id <original_task_id> \
   --prompt "User's follow-up answer"
 ```
@@ -76,8 +76,10 @@ uv run "$SCRIPT" create \
 ## Deleting Tasks
 
 ```bash
-uv run "$SCRIPT" delete --task-id <task_id>
+node "$SCRIPT" delete --task-id <task_id>
 ```
+
+If your environment prefers Python, the bundled fallback remains available at `<SKILL_DIR>/scripts/manus_client.py`.
 
 ## Troubleshooting
 

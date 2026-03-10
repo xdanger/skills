@@ -19,13 +19,13 @@ Docs: `https://open.manus.im/docs`
 ## Script
 
 ```bash
-SCRIPT="<SKILL_DIR>/scripts/manus_client.py"
+SCRIPT="<SKILL_DIR>/scripts/manus_client.mjs"
 ```
 
 Create:
 
 ```bash
-uv run "$SCRIPT" create \
+node "$SCRIPT" create \
   --prompt "Your prompt" \
   --mode agent \
   --profile manus-1.6
@@ -43,31 +43,31 @@ Optional:
 Status:
 
 ```bash
-uv run "$SCRIPT" status --task-id <task_id>
+node "$SCRIPT" status --task-id <task_id>
 ```
 
 Result:
 
 ```bash
-uv run "$SCRIPT" result --task-id <task_id>
+node "$SCRIPT" result --task-id <task_id>
 ```
 
 List:
 
 ```bash
-uv run "$SCRIPT" list --limit 10 --status completed
+node "$SCRIPT" list --limit 10 --status completed
 ```
 
 Delete:
 
 ```bash
-uv run "$SCRIPT" delete --task-id <task_id>
+node "$SCRIPT" delete --task-id <task_id>
 ```
 
 If Manus asks a follow-up question:
 
 ```bash
-uv run "$SCRIPT" create \
+node "$SCRIPT" create \
   --task-id <original_task_id> \
   --prompt "User reply"
 ```
@@ -77,3 +77,4 @@ References:
 - API: `<SKILL_DIR>/references/api.md`
 - Setup: `<SKILL_DIR>/references/setup.md`
 - Webhook helper: `<SKILL_DIR>/scripts/webhook-transform.mjs`
+- Python fallback: `<SKILL_DIR>/scripts/manus_client.py`
