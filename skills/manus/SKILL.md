@@ -76,5 +76,6 @@ References:
 
 - API: `<SKILL_DIR>/references/api.md`
 - Setup: `<SKILL_DIR>/references/setup.md`
-- Webhook helper: `<SKILL_DIR>/scripts/webhook-transform.mjs`
+- Webhook helper (Node): `<SKILL_DIR>/scripts/webhook-transform.mjs`
+- Webhook helper (Python): `<SKILL_DIR>/scripts/webhook_transform.py`
 - Python fallback: `<SKILL_DIR>/scripts/manus_client.py`
