@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-const MANUS_SKILL_HOME = join(homedir(), ".manus-skill");
+const MANUS_SKILL_HOME = process.env.MANUS_SKILL_HOME || join(homedir(), ".manus-skill");
 const PUBKEY_CACHE = join(MANUS_SKILL_HOME, "cache", "manus-webhook-pubkey.pem");
 const PUBKEY_TTL_MS = 60 * 60 * 1000;
 const TIMESTAMP_TOLERANCE_S = 300;
@@ -70,10 +70,9 @@ function verifySignature(ctx, pubKeyPem) {
   const url = ctx.url || "";
   const bodyHash = createHash("sha256").update(rawBody).digest("hex");
   const signatureContent = `${timestamp}.${url}.${bodyHash}`;
-  const contentHash = createHash("sha256").update(signatureContent, "utf8").digest();
 
   const verifier = createVerify("RSA-SHA256");
-  verifier.update(contentHash);
+  verifier.update(signatureContent, "utf8");
   try {
     return verifier.verify(pubKeyPem, signature, "base64");
   } catch {

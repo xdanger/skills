@@ -99,12 +99,11 @@ def verify_signature(ctx: dict[str, Any], pubkey_pem: str) -> bool:
     url = ctx.get("url") or ""
     body_hash = hashlib.sha256(raw_body_bytes).hexdigest()
     signature_content = f"{timestamp}.{url}.{body_hash}".encode("utf-8")
-    content_hash = hashlib.sha256(signature_content).digest()
 
     try:
         signature = base64.b64decode(signature_b64)
         public_key = serialization.load_pem_public_key(pubkey_pem.encode("utf-8"))
-        public_key.verify(signature, content_hash, padding.PKCS1v15(), hashes.SHA256())
+        public_key.verify(signature, signature_content, padding.PKCS1v15(), hashes.SHA256())
         return True
     except (ValueError, InvalidSignature):
         return False
