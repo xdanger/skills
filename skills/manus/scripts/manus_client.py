@@ -67,6 +67,28 @@ def safe_output_path(download_dir: Path, filename: str) -> Path:
     return candidate
 
 
+def collect_assistant_outputs(data: dict) -> tuple[list[str], list[dict[str, str]]]:
+    texts: list[str] = []
+    files: list[dict[str, str]] = []
+
+    for entry in data.get("output", []):
+        if entry.get("role") != "assistant":
+            continue
+
+        for content in entry.get("content", []):
+            if content.get("text"):
+                texts.append(content["text"])
+            if content.get("fileUrl"):
+                files.append(
+                    {
+                        "url": content["fileUrl"],
+                        "name": content.get("fileName", "attachment"),
+                    }
+                )
+
+    return texts, files
+
+
 # --- Task Registry ---
 
 def load_registry() -> dict:
@@ -226,27 +248,22 @@ def cmd_result(args: argparse.Namespace) -> None:
     download_dir = Path(args.download_dir) if args.download_dir else media_dir_for_now()
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    output_entries = data.get("output", [])
-    texts: list[str] = []
     downloaded_files: list[str] = []
+    texts, files = collect_assistant_outputs(data)
 
-    for entry in output_entries:
-        for content in entry.get("content", []):
-            if content.get("text"):
-                texts.append(content["text"])
-            if content.get("fileUrl"):
-                fname = content.get("fileName", "attachment")
-                dest = safe_output_path(download_dir, fname)
-                # Download the file
-                with httpx.Client(timeout=120) as dl_client, dl_client.stream(
-                    "GET",
-                    content["fileUrl"],
-                ) as dl_resp:
-                    dl_resp.raise_for_status()
-                    with open(dest, "wb") as out:
-                        for chunk in dl_resp.iter_bytes():
-                            out.write(chunk)
-                downloaded_files.append(str(dest))
+    for file_info in files:
+        dest = safe_output_path(download_dir, file_info["name"])
+        # Download assistant-emitted files only. User-uploaded input attachments
+        # appear in task output too, but they are not task results.
+        with httpx.Client(timeout=120) as dl_client, dl_client.stream(
+            "GET",
+            file_info["url"],
+        ) as dl_resp:
+            dl_resp.raise_for_status()
+            with open(dest, "wb") as out:
+                for chunk in dl_resp.iter_bytes():
+                    out.write(chunk)
+        downloaded_files.append(str(dest))
 
     result = {
         "task_id": args.task_id,

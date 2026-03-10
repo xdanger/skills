@@ -1,11 +1,6 @@
-import {
-  createReadStream,
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+/* global fetch, process, URL */
+
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -121,11 +116,14 @@ async function uploadFile(filepath) {
     body: JSON.stringify({ filename: basename(filepath) }),
   });
 
+  const fileBuffer = readFileSync(filepath);
   const putResponse = await fetch(fileInfo.upload_url, {
     method: "PUT",
-    headers: { "Content-Type": "application/octet-stream" },
-    body: Readable.toWeb(createReadStream(filepath)),
-    duplex: "half",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(fileBuffer.byteLength),
+    },
+    body: fileBuffer,
   });
   if (!putResponse.ok) {
     const body = await putResponse.text();
@@ -155,6 +153,31 @@ function printJson(data) {
 
 function printMedia(path) {
   process.stderr.write(`MEDIA:${path}\n`);
+}
+
+export function collectAssistantOutputs(data) {
+  const texts = [];
+  const files = [];
+
+  for (const entry of data.output || []) {
+    if (entry.role !== "assistant") {
+      continue;
+    }
+
+    for (const content of entry.content || []) {
+      if (content.text) {
+        texts.push(content.text);
+      }
+      if (content.fileUrl) {
+        files.push({
+          url: content.fileUrl,
+          name: content.fileName || "attachment",
+        });
+      }
+    }
+  }
+
+  return { texts, files };
 }
 
 function parseArgs(argv) {
@@ -297,19 +320,12 @@ async function cmdResult(args) {
   const downloadDir = args.downloadDir || monthDir();
   mkdirSync(downloadDir, { recursive: true });
 
-  const texts = [];
   const downloadedFiles = [];
-  for (const entry of data.output || []) {
-    for (const content of entry.content || []) {
-      if (content.text) {
-        texts.push(content.text);
-      }
-      if (content.fileUrl) {
-        const destination = safeOutputPath(downloadDir, content.fileName || "attachment");
-        await downloadFile(content.fileUrl, destination);
-        downloadedFiles.push(destination);
-      }
-    }
+  const { texts, files } = collectAssistantOutputs(data);
+  for (const file of files) {
+    const destination = safeOutputPath(downloadDir, file.name);
+    await downloadFile(file.url, destination);
+    downloadedFiles.push(destination);
   }
 
   printJson({
@@ -363,7 +379,7 @@ async function cmdDelete(args) {
   printJson(data);
 }
 
-async function main() {
+export async function main() {
   const args = parseArgs(process.argv.slice(2));
   switch (args.command) {
     case "create":
@@ -387,4 +403,6 @@ async function main() {
   }
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}

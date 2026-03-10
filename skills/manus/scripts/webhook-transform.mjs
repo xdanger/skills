@@ -1,3 +1,5 @@
+/* global Buffer, fetch, process */
+
 import { createHash, createVerify } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
