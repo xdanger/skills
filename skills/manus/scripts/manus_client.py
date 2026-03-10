@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from pathlib import Path
 
 import httpx
@@ -70,13 +71,16 @@ def safe_output_path(download_dir: Path, filename: str) -> Path:
 
 def load_registry() -> dict:
     if REGISTRY_PATH.exists():
-        return json.loads(REGISTRY_PATH.read_text())
+        try:
+            return json.loads(REGISTRY_PATH.read_text())
+        except (OSError, JSONDecodeError):
+            return {}
     return {}
 
 
 def save_registry(data: dict) -> None:
     REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REGISTRY_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    REGISTRY_PATH.write_text(f"{json.dumps(data, indent=2, ensure_ascii=False)}\n")
 
 
 def register_task(task_id: str, label: str | None, prompt_summary: str) -> None:
@@ -122,7 +126,7 @@ def upload_file(filepath: str) -> dict[str, str]:
         with open(p, "rb") as f:
             put_resp = client.put(
                 upload_url,
-                content=f.read(),
+                content=f,
                 headers={"Content-Type": "application/octet-stream"},
             )
             put_resp.raise_for_status()
@@ -234,10 +238,14 @@ def cmd_result(args: argparse.Namespace) -> None:
                 fname = content.get("fileName", "attachment")
                 dest = safe_output_path(download_dir, fname)
                 # Download the file
-                with httpx.Client(timeout=120) as dl_client:
-                    dl_resp = dl_client.get(content["fileUrl"])
+                with httpx.Client(timeout=120) as dl_client, dl_client.stream(
+                    "GET",
+                    content["fileUrl"],
+                ) as dl_resp:
                     dl_resp.raise_for_status()
-                    dest.write_bytes(dl_resp.content)
+                    with open(dest, "wb") as out:
+                        for chunk in dl_resp.iter_bytes():
+                            out.write(chunk)
                 downloaded_files.append(str(dest))
 
     result = {
