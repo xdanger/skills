@@ -1,118 +1,79 @@
 ---
 name: manus
-description: "Delegate complex tasks to Manus — an autonomous AI agent for deep web research, file generation, data analysis, and long-running multi-step workflows. Use when the task exceeds local tools or sub-agents: large research sweeps, deliverables such as PDF/PPT/CSV, connector-based tasks, or work that should run asynchronously for minutes to hours."
+description: "Use Manus for async tasks that exceed local tools: broad research, deliverables such as PDF/PPT/CSV, connector-based work, or long multi-step jobs. Create a task, poll or receive webhooks, then fetch results with the bundled script."
 ---
 
 # Manus
 
-## Overview
+Prefer Manus only when local tools or sub-agents are not enough.
 
-Manus is an autonomous AI agent that can execute long, multi-step work inside its own cloud sandbox. Use it when you want an external agent to keep working asynchronously instead of tying up the current session.
+Docs: `https://open.manus.im/docs`
 
-Official docs live at `https://open.manus.im/docs` as of March 10, 2026. Some official Manus pages still link `https://open.manus.ai/docs`; treat that as an alias and prefer the `.im` docs site when citing docs.
+## Rules
 
-## When to Use Manus
+1. Give Manus a complete prompt with scope, output format, and constraints
+2. Do not include secrets or unnecessary personal data
+3. Prefer `manus-1.6`; use `-lite` for cheaper exploratory work
+4. Continue multi-turn tasks with `--task-id`
 
-- Deep research across many sources
-- Deliverables such as PDF, PPT, CSV, or structured reports
-- Multi-step tasks that may take many minutes
-- Connector-dependent work such as Gmail, Notion, or Google Calendar
-- Large collection, aggregation, or comparison tasks
-
-## When Not to Use Manus
-
-- Quick lookups that local search tools can answer faster
-- Interactive back-and-forth where the user expects immediate replies
-- Pure code changes that are better handled in the current workspace
-- Small fetches or one-shot extraction tasks
-
-## Prompting Guidance
-
-Before delegating:
-
-1. Pull in only the context that materially helps the task
-2. Specify the expected output format
-3. Define boundaries: what to include, exclude, or prioritize
-4. State any language, locale, or file-format requirements
-5. Never include secrets, tokens, passwords, or unnecessary personal data
-
-## Script Commands
-
-All examples use:
+## Script
 
 ```bash
 SCRIPT="<SKILL_DIR>/scripts/manus_client.py"
 ```
 
-### Create task
+Create:
 
 ```bash
 uv run "$SCRIPT" create \
-  --prompt "Your enriched prompt here" \
+  --prompt "Your prompt" \
   --mode agent \
-  --profile manus-1.6 \
-  --locale zh-CN
+  --profile manus-1.6
 ```
 
-Useful optional flags:
+Optional:
 
 - `--attachment /path/to/file` repeatable
 - `--connector <uuid>` repeatable
-- `--task-id <id>` to continue an existing task
-- `--label <text>` to store a local label in the registry
+- `--task-id <id>`
+- `--label <text>`
+- `--locale zh-CN`
+- `--interactive`
 
-### Check status
+Status:
 
 ```bash
 uv run "$SCRIPT" status --task-id <task_id>
 ```
 
-Use `--convert` when you want Manus to convert PPTX output during retrieval.
-
-### Get result
+Result:
 
 ```bash
 uv run "$SCRIPT" result --task-id <task_id>
 ```
 
-Downloads go to `~/.manus-skill/downloads/YYYYMM/` by default.
-
-### List recent tasks
+List:
 
 ```bash
 uv run "$SCRIPT" list --limit 10 --status completed
 ```
 
-### Delete task
+Delete:
 
 ```bash
 uv run "$SCRIPT" delete --task-id <task_id>
 ```
 
-This maps to Manus `DELETE /v1/tasks/{task_id}`.
-
-## Multi-Turn Tasks
-
-When Manus returns `stop_reason: "ask"`:
-
-1. Relay the question to the user
-2. Continue the same task with:
+If Manus asks a follow-up question:
 
 ```bash
 uv run "$SCRIPT" create \
   --task-id <original_task_id> \
-  --prompt "User's follow-up answer"
+  --prompt "User reply"
 ```
 
-## Cost Awareness
+References:
 
-- Default to `manus-1.6`
-- Use `manus-1.6-lite` for exploratory or lower-stakes work
-- Use `manus-1.6-max` only when the task clearly needs the highest capability
-
-## Files
-
-- Main client: `<SKILL_DIR>/scripts/manus_client.py`
-- API notes: `<SKILL_DIR>/references/api.md`
-- Setup notes: `<SKILL_DIR>/references/setup.md`
-- Optional webhook helper: `<SKILL_DIR>/scripts/webhook-transform.js`
+- API: `<SKILL_DIR>/references/api.md`
+- Setup: `<SKILL_DIR>/references/setup.md`
+- Webhook helper: `<SKILL_DIR>/scripts/webhook-transform.js`

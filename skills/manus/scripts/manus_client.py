@@ -51,6 +51,21 @@ def media_dir_for_now() -> Path:
     return d
 
 
+def safe_output_path(download_dir: Path, filename: str) -> Path:
+    cleaned = Path(filename or "attachment").name
+    if not cleaned or cleaned in {".", ".."}:
+        cleaned = "attachment"
+
+    candidate = download_dir / cleaned
+    stem = candidate.stem or "attachment"
+    suffix = candidate.suffix
+    index = 1
+    while candidate.exists():
+        candidate = download_dir / f"{stem}-{index}{suffix}"
+        index += 1
+    return candidate
+
+
 # --- Task Registry ---
 
 def load_registry() -> dict:
@@ -217,7 +232,7 @@ def cmd_result(args: argparse.Namespace) -> None:
                 texts.append(content["text"])
             if content.get("fileUrl"):
                 fname = content.get("fileName", "attachment")
-                dest = download_dir / fname
+                dest = safe_output_path(download_dir, fname)
                 # Download the file
                 with httpx.Client(timeout=120) as dl_client:
                     dl_resp = dl_client.get(content["fileUrl"])
