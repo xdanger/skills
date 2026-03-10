@@ -61,7 +61,7 @@ curl -s https://api.manus.ai/v1/webhook/public_key \
   > ~/.manus-skill/cache/manus-webhook-pubkey.pem
 ```
 
-The bundled `scripts/webhook-transform.js` is an optional helper that validates the signature and normalizes the event payload. Adapt it to your runtime instead of assuming it is a drop-in integration for every platform.
+The bundled `scripts/webhook-transform.mjs` is an optional helper that validates the signature and normalizes the event payload. Adapt it to your runtime instead of assuming it is a drop-in integration for every platform.
 
 ## Multi-Turn Tasks
 

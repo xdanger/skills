@@ -76,4 +76,4 @@ References:
 
 - API: `<SKILL_DIR>/references/api.md`
 - Setup: `<SKILL_DIR>/references/setup.md`
-- Webhook helper: `<SKILL_DIR>/scripts/webhook-transform.js`
+- Webhook helper: `<SKILL_DIR>/scripts/webhook-transform.mjs`
