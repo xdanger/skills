@@ -170,7 +170,7 @@ Request:
 ```json
 {
   "webhook": {
-    "url": "https://example.com/hooks/manus?token=..."
+    "url": "https://your-domain.example/manus-webhook"
   }
 }
 ```

@@ -2,10 +2,10 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx>=0.27.0"]
 # ///
-"""Manus API client for OpenClaw.
+"""Generic Manus API client.
 
 Usage:
-    uv run manus_client.py create --prompt "..." --session-key "..." [options]
+    uv run manus_client.py create --prompt "..." [options]
     uv run manus_client.py status --task-id <id>
     uv run manus_client.py result --task-id <id> [--download-dir <path>] [--convert]
     uv run manus_client.py list [--limit N] [--status <status>]
@@ -24,8 +24,9 @@ from pathlib import Path
 import httpx
 
 BASE_URL = "https://api.manus.ai"
-REGISTRY_PATH = Path.home() / ".openclaw" / "cache" / "manus-tasks.json"
-DEFAULT_MEDIA_DIR = Path.home() / ".openclaw" / "media"
+STATE_HOME = Path(os.environ.get("MANUS_SKILL_HOME", Path.home() / ".manus-skill"))
+REGISTRY_PATH = STATE_HOME / "cache" / "tasks.json"
+DEFAULT_MEDIA_DIR = STATE_HOME / "downloads"
 
 
 def get_api_key() -> str:
@@ -63,10 +64,10 @@ def save_registry(data: dict) -> None:
     REGISTRY_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
 
 
-def register_task(task_id: str, session_key: str, prompt_summary: str) -> None:
+def register_task(task_id: str, label: str | None, prompt_summary: str) -> None:
     reg = load_registry()
     reg[task_id] = {
-        "session_key": session_key,
+        "label": label or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "prompt_summary": prompt_summary[:200],
         "status": "created",
@@ -154,10 +155,9 @@ def cmd_create(args: argparse.Namespace) -> None:
         result = resp.json()
 
     task_id = result.get("task_id", "")
-    session_key = args.session_key or ""
 
     if task_id:
-        register_task(task_id, session_key, args.prompt)
+        register_task(task_id, args.label, args.prompt)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
@@ -235,7 +235,7 @@ def cmd_result(args: argparse.Namespace) -> None:
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
-    # Print MEDIA: lines for gateway auto-attach
+    # Emit file paths on stderr for callers that want to inspect downloads.
     for fpath in downloaded_files:
         print(f"MEDIA:{fpath}", file=sys.stderr)
 
@@ -280,7 +280,7 @@ def cmd_delete(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manus.im API client for OpenClaw")
+    parser = argparse.ArgumentParser(description="Generic Manus API client")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # create
@@ -288,7 +288,7 @@ def main() -> None:
     p_create.add_argument("--prompt", required=True, help="Task prompt")
     p_create.add_argument("--mode", choices=["agent", "adaptive", "chat"], default="agent")
     p_create.add_argument("--profile", default="manus-1.6", choices=["manus-1.6", "manus-1.6-lite", "manus-1.6-max"])
-    p_create.add_argument("--session-key", default="", help="OpenClaw session key for webhook routing")
+    p_create.add_argument("--label", default=None, help="Optional local label stored in the task registry")
     p_create.add_argument("--attachment", action="append", help="File path to attach (repeatable)")
     p_create.add_argument("--connector", action="append", help="Connector UUID (repeatable)")
     p_create.add_argument("--locale", default=None, help="Locale (e.g., zh-CN, en-US)")
@@ -303,7 +303,7 @@ def main() -> None:
     # result
     p_result = sub.add_parser("result", help="Get task result and download attachments")
     p_result.add_argument("--task-id", required=True, help="Task ID")
-    p_result.add_argument("--download-dir", default=None, help="Directory for downloads (default: ~/.openclaw/media/YYYYMM/)")
+    p_result.add_argument("--download-dir", default=None, help="Directory for downloads (default: ~/.manus-skill/downloads/YYYYMM/)")
     p_result.add_argument("--convert", action="store_true", help="Convert PPTX output when supported by Manus")
 
     # list
