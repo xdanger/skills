@@ -1,12 +1,16 @@
 import {
   appendDecision,
   createId,
+  fail,
   getThreadById,
   mergeUniqueStrings,
   queueWorkItem,
+  syncSessionStage,
   uniqueBy,
 } from "./session_schema.mjs";
 import { classifyTaskShape, normalizeGoal } from "./router.mjs";
+
+const VALID_TASK_SHAPES = new Set(["broad", "verification", "site", "async"]);
 
 function splitSentences(text) {
   return String(text)
@@ -110,6 +114,100 @@ function createClaim(threadId, text, claimType, priority, answerRelevance = "hig
       confidence_label: "low",
       last_evaluated_at: null,
     },
+  };
+}
+
+function createClaimFromSpec(threadId, spec = {}) {
+  const text = String(spec.text ?? "").trim();
+  if (!text) {
+    fail("Agent-authored claim is missing `text`.");
+  }
+  const claim = createClaim(
+    threadId,
+    text,
+    spec.claim_type ?? "fact",
+    spec.priority ?? "medium",
+    spec.answer_relevance ?? (spec.priority === "high" ? "high" : "medium"),
+  );
+  claim.why_it_matters = String(spec.why_it_matters ?? "").trim();
+  return claim;
+}
+
+function createThreadFromSpec(spec = {}) {
+  const title = String(spec.title ?? "").trim();
+  const intent = String(spec.intent ?? "").trim();
+  if (!title) {
+    fail("Agent-authored thread is missing `title`.");
+  }
+  if (!intent) {
+    fail(`Agent-authored thread "${title}" is missing \`intent\`.`);
+  }
+  return createThread(
+    title,
+    intent,
+    Array.isArray(spec.subqueries)
+      ? spec.subqueries.map((item) => String(item).trim()).filter(Boolean)
+      : [],
+    String(spec.notes ?? "").trim(),
+  );
+}
+
+function compileAgentPlan(rawPlan = {}) {
+  if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
+    fail("Agent-authored plan must be a JSON object.");
+  }
+
+  const rawThreads = Array.isArray(rawPlan.threads) ? rawPlan.threads : [];
+  if (rawThreads.length === 0) {
+    fail("Agent-authored plan must include a non-empty `threads` array.");
+  }
+
+  const threads = [];
+  const claims = [];
+  for (const rawThread of rawThreads) {
+    const thread = createThreadFromSpec(rawThread);
+    const rawClaims = Array.isArray(rawThread.claims) ? rawThread.claims : [];
+    if (rawClaims.length === 0) {
+      fail(`Agent-authored thread "${thread.title}" must include at least one claim.`);
+    }
+    const compiledClaims = rawClaims.map((item) => createClaimFromSpec(thread.thread_id, item));
+    thread.claim_ids = compiledClaims.map((item) => item.claim_id);
+    thread.execution.open_claim_ids = [...thread.claim_ids];
+    threads.push(thread);
+    claims.push(...compiledClaims);
+  }
+
+  const artifacts = rawPlan.planning_artifacts ?? {};
+  const taskShape =
+    typeof rawPlan.task_shape === "string" ? rawPlan.task_shape.trim().toLowerCase() : null;
+  if (taskShape && !VALID_TASK_SHAPES.has(taskShape)) {
+    fail(`Invalid agent-authored task_shape: ${rawPlan.task_shape}`);
+  }
+  return {
+    goal: typeof rawPlan.goal === "string" ? normalizeGoal(rawPlan.goal) : "",
+    task_shape: taskShape,
+    plan_id: typeof rawPlan.plan_id === "string" ? rawPlan.plan_id.trim() : "",
+    threads,
+    claims,
+    remainingGaps: Array.isArray(rawPlan.remaining_gaps)
+      ? rawPlan.remaining_gaps.map((item) => String(item).trim()).filter(Boolean)
+      : [],
+    planningArtifacts: {
+      hypotheses: Array.isArray(artifacts.hypotheses)
+        ? artifacts.hypotheses.map((item) => String(item).trim()).filter(Boolean)
+        : [],
+      domain_hints: Array.isArray(artifacts.domain_hints)
+        ? artifacts.domain_hints.map((item) => String(item).trim()).filter(Boolean)
+        : [],
+      comparison_axes: Array.isArray(artifacts.comparison_axes)
+        ? artifacts.comparison_axes.map((item) => String(item).trim()).filter(Boolean)
+        : [],
+      continuation_notes: Array.isArray(artifacts.continuation_notes)
+        ? artifacts.continuation_notes.map((item) => String(item).trim()).filter(Boolean)
+        : [],
+    },
+    constraints: rawPlan.constraints ?? {},
+    summary: String(rawPlan.summary ?? rawPlan.notes ?? "").trim(),
   };
 }
 
@@ -493,6 +591,152 @@ function queuePlanWork(session, parentWorkItemId = null) {
       dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
     });
   }
+}
+
+function queueThreadsForGathering(session, threads, parentWorkItemId = null, reason) {
+  for (const thread of threads) {
+    queueWorkItem(session, {
+      kind: "gather_thread",
+      scopeType: "thread",
+      scopeId: thread.thread_id,
+      keySuffix: `round-${thread.execution.gather_rounds + 1}`,
+      reason,
+      dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+    });
+  }
+}
+
+export function applyResearchPlan(
+  session,
+  rawPlan,
+  { mode = "replace", parentWorkItemId = null } = {},
+) {
+  const compiled = compileAgentPlan(rawPlan);
+  const isAppend = mode === "append";
+  if (!isAppend && mode !== "replace") {
+    fail(`Invalid agent-authored plan mode: ${mode}`);
+  }
+  if (
+    compiled.plan_id &&
+    session.decision_log.some(
+      (item) => item.action === "agent_plan" && item.details?.plan_id === compiled.plan_id,
+    )
+  ) {
+    appendDecision(session, "agent_plan_skip", "Skipped a duplicate agent-authored plan.", {
+      mode,
+      plan_id: compiled.plan_id,
+    });
+    return compiled;
+  }
+
+  if (compiled.goal) {
+    session.goal = compiled.goal;
+  } else if (!session.goal) {
+    session.goal = normalizeGoal(session.user_query);
+  }
+
+  if (compiled.task_shape) {
+    session.task_shape = compiled.task_shape;
+  } else if (!session.task_shape) {
+    session.task_shape = classifyTaskShape(
+      session.goal || session.user_query,
+      session.constraints.domains,
+    );
+  }
+
+  if (Array.isArray(compiled.constraints.domains) && compiled.constraints.domains.length > 0) {
+    session.constraints.domains = mergeUniqueStrings(
+      session.constraints.domains,
+      compiled.constraints.domains.map((item) => String(item).trim()).filter(Boolean),
+    );
+  }
+  if (compiled.constraints.time_range) {
+    session.constraints.time_range = compiled.constraints.time_range;
+  }
+  if (compiled.constraints.country) {
+    session.constraints.country = compiled.constraints.country;
+  }
+
+  if (isAppend) {
+    session.threads.push(...compiled.threads);
+    session.claims.push(...compiled.claims);
+  } else {
+    session.threads = compiled.threads;
+    session.claims = compiled.claims;
+    session.work_items = session.work_items.filter(
+      (item) => !(item.kind === "plan_session" && item.status === "queued"),
+    );
+  }
+
+  session.planning_artifacts.hypotheses = isAppend
+    ? mergeUniqueStrings(
+        session.planning_artifacts.hypotheses,
+        compiled.planningArtifacts.hypotheses,
+      )
+    : compiled.planningArtifacts.hypotheses;
+  session.planning_artifacts.domain_hints = isAppend
+    ? mergeUniqueStrings(
+        session.planning_artifacts.domain_hints,
+        compiled.planningArtifacts.domain_hints,
+      )
+    : compiled.planningArtifacts.domain_hints;
+  session.planning_artifacts.comparison_axes = isAppend
+    ? mergeUniqueStrings(
+        session.planning_artifacts.comparison_axes,
+        compiled.planningArtifacts.comparison_axes,
+      )
+    : compiled.planningArtifacts.comparison_axes;
+  session.planning_artifacts.continuation_notes = isAppend
+    ? mergeUniqueStrings(
+        session.planning_artifacts.continuation_notes,
+        compiled.planningArtifacts.continuation_notes,
+      )
+    : compiled.planningArtifacts.continuation_notes;
+
+  session.stop_status.remaining_gaps = mergeUniqueStrings(
+    session.stop_status.remaining_gaps,
+    compiled.remainingGaps,
+  );
+  if (session.planning_artifacts.comparison_axes.length === 0 && session.task_shape) {
+    session.planning_artifacts.comparison_axes = defaultComparisonAxes(session.task_shape);
+  }
+
+  if (session.task_shape === "async") {
+    queueWorkItem(session, {
+      kind: "handoff_session",
+      scopeType: "session",
+      scopeId: session.session_id,
+      reason: "Agent-authored plan marked the task as async.",
+      dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+    });
+  } else {
+    queueThreadsForGathering(
+      session,
+      compiled.threads,
+      parentWorkItemId,
+      isAppend
+        ? "Agent-authored follow-up plan queued new gathering work."
+        : "Agent-authored plan queued the initial gathering work.",
+    );
+  }
+
+  appendDecision(
+    session,
+    "agent_plan",
+    isAppend
+      ? "Applied an agent-authored follow-up research plan."
+      : "Applied an agent-authored research plan.",
+    {
+      mode,
+      plan_id: compiled.plan_id || null,
+      task_shape: session.task_shape,
+      thread_count: compiled.threads.length,
+      claim_count: compiled.claims.length,
+      summary: compiled.summary,
+    },
+  );
+  syncSessionStage(session);
+  return compiled;
 }
 
 export async function planSession(session, runtime, workItem = null) {

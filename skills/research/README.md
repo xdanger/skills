@@ -1,240 +1,254 @@
 # Research Skill
 
-`research` is a resumable skill for deep research workflows. Its goal is to be an
-**evidence-aware deep research engine** for modern AI agents: plan the work, gather real
-evidence, verify claims, preserve contradictions, survive interruptions, and resume from a
-tracked local ledger instead of starting over.
+`research` is a deep research skill for modern AI agents.
 
-## Goal
+Not a search wrapper. Not a summary prompt with extra steps. Not a pile of heuristics pretending to be judgment.
 
-The target state of this skill is not “search plus summary.” It is an evidence-aware research
-engine with a clear separation between:
+The ambition here is simpler and more serious: give an agent a research runtime it can trust. A place to think across multiple passes, keep its bearings, preserve evidence, survive interruptions, and come back to the same investigation without quietly starting over.
+
+This README is written for humans maintaining the skill. It is meant to give a clear feel for what this project is, what kind of taste it is trying to embody, and where its boundaries should stay. Agent-facing operating instructions live in [SKILL.md](SKILL.md).
+
+## The Shape Of The Thing
+
+The target is an **evidence-aware deep research engine** for agents.
+
+That phrase matters. “Evidence-aware” means the system should know the difference between:
+
+- a plan
+- a lead
+- a source
+- a claim
+- a contradiction
+- an answer
+
+Those are not the same object wearing different names. A good research system keeps them separate. It does not let a promising plan masquerade as evidence, or let a plausible synthesis pretend to be a settled conclusion.
+
+“Deep research” also matters. The goal is not to answer quickly at any cost. The goal is to let an agent do the kind of work that actually takes multiple passes:
+
+- break a fuzzy question into tractable threads
+- gather real sources
+- tie evidence to claims
+- surface contradictions instead of smoothing them away
+- preserve uncertainty where the evidence remains thin
+- continue the same line of inquiry later
+
+If this skill is doing its job, “continue this research” should feel like returning to a live case file, not asking the same assistant to improvise a fresh summary.
+
+## What It Should Feel Like
+
+The ideal user experience is not “the model searched a bit more.”
+
+It is closer to this:
+
+- the question is framed well
+- the work is decomposed in a way that matches the problem
+- the answer is direct when the evidence is direct
+- the uncertainty is honest when the evidence is mixed
+- the system remembers what it already knows
+- the citations are attached to actual support, not decorative
+
+This is meant to feel like a research workflow with memory, not a chat turn with extra latency.
+
+## The Central Design Belief
+
+This skill is built on one core belief:
+
+**scripts should enforce reliability; agents should spend their intelligence on judgment**
+
+That is the line everything else hangs on.
+
+The scripted runtime should own the things that must be dependable:
+
+- persistence
+- resumability
+- checkpointing
+- work queue semantics
+- provider contracts
+- handoff and rejoin behavior
+- evidence ledger integrity
+
+The agent should own as much of the following as possible:
+
+- how to frame the question
+- how to decompose the work
+- what claims matter
+- what sources are worth pursuing next
+- how to interpret conflicting evidence
+- when to keep digging
+- how to synthesize the answer
+
+This boundary is not an implementation detail. It is the philosophy of the skill.
+
+If a decision can be described clearly in natural language and benefits from a better model, it should drift toward the agent side over time. If a behavior must survive retries, interruptions, or provider weirdness without corrupting state, it belongs in the scripted runtime.
+
+## Why This Boundary Matters
+
+There is a trap in building agent skills: each time the model struggles, it is tempting to codify more judgment in scripts.
+
+That works for a while. Then the skill slowly turns into a rule engine. It becomes harder to improve, more brittle to edge cases, and less able to benefit from stronger models.
+
+This project is trying not to fall into that trap.
+
+The runtime should be firm where firmness creates trust. It should be soft where softness allows judgment to improve.
+
+That is why the recent design work deliberately moved toward **agent-authored planning** rather than doubling down on a bigger fallback planner.
+
+## Agent-Native Planning
+
+One of the most important recent changes is the addition of an explicit agent-authored planning path via `--plan-file`.
+
+This is not just a convenience feature. It is a statement about how the skill is supposed to work.
+
+Sometimes the agent already knows the right shape of the investigation:
+
+- which threads matter
+- which claims are answer-bearing
+- which subqueries are worth paying for
+- which gaps should remain explicit
+
+In those moments, the runtime should not force the agent to tunnel that judgment through a fallback planner and hope the heuristics recover it.
+
+Instead:
+
+- the agent authors the plan
+- the runtime validates it
+- the runtime persists it
+- the runtime queues it
+- the rest of the research loop proceeds with the same durability guarantees
+
+This keeps the fallback planner available, but prevents it from becoming the center of the system.
+
+## Why Resumability Is Non-Negotiable
+
+Serious research breaks.
+
+It breaks because providers are slow, because new leads appear late, because follow-up questions change the shape of the work, because remote handoffs happen, because evidence conflicts, because someone wants to return tomorrow and go deeper on one thread instead of three.
+
+That is why this skill treats research as a session rather than a prompt.
+
+The session should preserve the living state of the investigation:
+
+- the goal
+- the current research shape
+- the evidence already gathered
+- the claims still unresolved
+- the work still queued
+- the handoff state, if any
+
+Without that, “deep research” is just repeated forgetting with nicer formatting.
+
+## Why Evidence Awareness Is Non-Negotiable
+
+The skill should never quietly blur these layers together:
 
 - planning artifacts
 - candidate URLs
-- real evidence
-- claim state
-- claim assessment
-- entities and observations
-- queued work
-- remote handoff state
-- final synthesis
+- evidence
+- conclusions
 
-In practical terms, that means:
+Once those boundaries collapse, the system starts to look smarter than it is. And that is the exact failure mode this skill is trying to avoid.
 
-- Tavily Research is a planning accelerator, not evidence
-- claims should be answer-bearing and falsifiable
-- evidence should be URL-backed and tied to explicit `claim_links`
-- contradictions should be recorded instead of smoothed over
-- confidence should come from claim sufficiency, source quality, and source diversity
-- continuation should queue targeted follow-up work instead of resetting the whole session
-- Manus should remain an async handoff path with a defined rejoin contract, not the default engine
+For this project, evidence awareness means:
 
-## What This README Is For
+- claims should be falsifiable and answer-bearing
+- evidence should be tied to real URLs
+- support and contradiction should be explicit
+- confidence should come from sufficiency, quality, and diversity
+- unresolved conflicts should remain visible
 
-This README is for humans maintaining the skill: it explains the design intent, architectural
-boundaries, and where different responsibilities belong.
+The standard is not “remove uncertainty.” The standard is “make uncertainty legible.”
 
-Agent-facing operating instructions, concrete command usage, and workflow details belong in:
+## What Exists Today
 
-- [SKILL.md](SKILL.md)
+This project already has a real runtime under it.
 
-## Design Principles
+It is no longer just an idea or a prompt pattern. Today it already has:
 
-The system should stay intentionally simple:
+- a versioned local session ledger
+- explicit queued work instead of one monolithic run
+- checkpointed provider operations
+- separation between claims, evidence, contradictions, and synthesis
+- continuation and rejoin flows
+- direct-answer oriented synthesis for verification-style work
+- an agent-authored planning path for better agent/runtime separation
 
-- one local orchestrator
-- one versioned session ledger
-- one work queue
-- one operation journal for checkpoints
-- Tavily as the default retrieval engine
-- Manus as async fallback only
+That means the foundation is real.
 
-The core design principle is:
+It also means the remaining problems are increasingly quality problems rather than structure problems.
 
-**let scripts enforce reliability, and let the agent spend its intelligence budget on research
-judgment**
+## What Still Needs Work
 
-That means:
+This skill is not “finished deep research.” Not yet.
 
-- `schema / persistence / work queue / provider contract / handoff` should stay strongly scripted
-- `planning / retrieval strategy / evidence attribution / synthesis shape` should stay agent-native
-  where possible
+The biggest remaining gaps are still in research quality:
 
-## Runtime Model
+- source authority is still partly heuristic
+- evidence attribution is still not audit-grade
+- excerpts can still be noisy
+- the fallback planner is still only partly dynamic
 
-The engine still reasons in a four-stage loop:
+That is the right kind of incompleteness at this stage. The boundary is getting cleaner; the judgments now need to get sharper.
 
-1. `plan`
-2. `gather`
-3. `verify`
-4. `synthesize`
+## What Should Stay Hard
 
-But execution is no longer session-global. The actual runtime unit is a queued `work_item`, such as:
+As the skill evolves, some parts should remain unapologetically rigid:
 
-- `plan_session`
-- `gather_thread`
-- `verify_claim`
-- `handoff_session`
-- `synthesize_session`
+- session schema
+- persistence format
+- checkpoint semantics
+- retry and recovery rules
+- work queue behavior
+- provider validation
+- handoff and rejoin contracts
 
-This is what makes the skill resumable: interruptions requeue a concrete work item instead of
-rewinding the whole session.
+These are the places where ambiguity creates duplication, corruption, or unsafe replay.
 
-## Session Ledger
+## What Should Stay Soft
 
-The local session ledger is the backbone of the skill. The important objects are:
+Other parts should stay deliberately open to model improvement:
 
-- `goal`
-- `task_shape`
-- `threads`
-- `claims`
-- `entities`
-- `observations`
-- `planning_artifacts`
-- `candidate_urls`
-- `evidence`
-- `contradictions`
-- `scores`
-- `stop_status`
-- `continuations`
-- `work_items`
-- `operations`
-- `final_answer`
-- `handoff`
+- plan shape
+- claim selection
+- retrieval strategy
+- source tradeoffs
+- follow-up prioritization
+- stopping judgment
+- synthesis structure and tone
 
-This separation is deliberate. Planning output must not be allowed to silently behave like
-evidence, and derived views such as `scores` or `final_answer` must stay downstream of the ledger,
-not act as new source-of-truth.
+These are the places where stronger agents should make the skill better without requiring the whole runtime to be rewritten.
 
-## Hard Contracts
+## How To Judge A Change
 
-### 1. Checkpoint Contract
+When changing this skill, the useful questions are not only technical.
 
-Every external side effect must be wrapped by an `operation` record:
+They are also questions of taste:
 
-- write the pending operation first
-- persist the session
-- call the provider
-- persist the applied or failed result
+1. Does this make the runtime more trustworthy?
+2. Does this make the agent/runtime boundary clearer?
+3. Does this improve real research quality?
+4. Does this preserve honest uncertainty?
 
-This is the minimum contract needed for resumability. Tavily calls are generally safe to retry;
-Manus handoffs are not. If a Manus submission is interrupted after the pending checkpoint, the
-session must enter a recovery state instead of auto-resubmitting.
-
-### 2. Work Queue Contract
-
-The session owns a queue of explicit work items. Threads and claims keep their own execution state
-so the orchestrator can resume targeted work:
-
-- thread gathering rounds
-- thread-level open claims
-- claim verification freshness
-- continuation-scoped rework
-- explicit `depends_on` relationships for blocked work
-
-The orchestrator should advance the smallest useful unit of work, not the whole session.
-
-### 3. Evidence Contract
-
-Only `evidence` records can change claim state or confidence.
-
-Evidence records should contain:
-
-- canonical URL metadata
-- source type and quality
-- publication date when available
-- provenance for how the evidence was gathered
-- `claim_links[]` with `claim_id`, `stance`, and `reason`
-
-This is the core evidence-aware contract. A single evidence record may support one claim and only
-provide context for another.
-
-Each claim also keeps an explicit assessment object so the engine can separate:
-
-- current verdict
-- evidence sufficiency
-- whether the verdict is tentative, resolved, or contested
-- which evidence dimensions are still missing
-
-### 4. Continuation Contract
-
-Continuations should be logged explicitly, not treated as generic notes. A continuation may:
-
-- deepen existing threads
-- queue claim re-verification
-- create a new follow-up thread
-
-The continuation log is what turns “continue this research” into a durable mutation of the same
-session rather than an implicit restart.
-
-### 5. Handoff and Rejoin Contract
-
-Manus remains an async path, but it is no longer a one-way escape hatch.
-
-The handoff contract must define:
-
-- submission state
-- queued rejoin state
-- recovery state for uncertain submissions
-- rejoin schema for remote results
-- how remote URL-backed evidence is normalized into the local ledger
-
-Remote results may influence claim state only after they have been imported as normal evidence
-records.
-
-## Retrieval Philosophy
-
-The default retrieval path is still:
-
-- `search -> filter -> extract -> verify`
-
-Broad tasks may use Tavily Research to improve planning, but not to support claims directly.
-Site-focused tasks default to `map -> extract`, with `crawl` allowed only for scoped audit-style
-work. Verification is claim-centric rather than session-centric.
-
-## Current Status
-
-This skill is now built around the contracts above. It has:
-
-- a versioned session ledger
-- explicit continuation, work-item, and operation layers
-- claim / claim-assessment / evidence / contradiction separation
-- entity and observation layers for comparison-heavy work
-- claim-centric verification
-- checkpointed provider calls
-- Manus handoff recovery and rejoin support
-
-What still matters most for quality is not adding more infrastructure, but improving:
-
-- claim-evidence attribution quality
-- retrieval strategy quality
-- live provider contract protection
-- remote result quality when rejoining async work
+If a change adds more hardcoded judgment where the agent could do better, it is probably moving in the wrong direction, even if it looks clever in the diff.
 
 ## Directory Layout
 
 ```text
 skills/research/
-├── SKILL.md
 ├── README.md
+├── SKILL.md
 ├── references/
-│   ├── method.md
-│   ├── providers.md
-│   └── refactor-plan.md
 └── scripts/
-    ├── research_session.mjs
-    ├── core/
-    └── tests/
 ```
+
+In practice:
+
+- [SKILL.md](SKILL.md) is the agent-facing operating guide
+- `references/` holds supporting method and provider notes
+- `scripts/` holds the durable runtime, ledger logic, and tests
 
 ## References
 
-- [SKILL.md](SKILL.md): agent-facing operating
-  instructions
-- [method.md](references/method.md): research
-  loop and evidence standards
-- [providers.md](references/providers.md):
-  Tavily and Manus roles
-- [refactor-plan.md](references/refactor-plan.md):
-  deeper architectural roadmap
+- [SKILL.md](SKILL.md)
+- [method.md](references/method.md)
+- [providers.md](references/providers.md)
+- [refactor-plan.md](references/refactor-plan.md)

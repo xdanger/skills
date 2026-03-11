@@ -42,6 +42,8 @@ Commands:
 node "$SCRIPT" start --query "Research the AI coding agent landscape in 2026"
 node "$SCRIPT" status --session-id <session_id>
 node "$SCRIPT" continue --session-id <session_id> --instruction "Dig deeper on pricing and enterprise adoption"
+node "$SCRIPT" start --query "Does product X support SSO?" --plan-file /path/to/plan.json
+node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/followup-plan.json
 node "$SCRIPT" rejoin --session-id <session_id> --payload-file /path/to/remote-result.json
 node "$SCRIPT" report --session-id <session_id>
 node "$SCRIPT" sources --session-id <session_id>
@@ -52,7 +54,57 @@ Optional flags:
 
 - `--depth quick|standard|deep`
 - `--domains domain1,domain2`
+- `--plan-file /path/to/plan.json`
 - `--format md|json` for `report`
+
+## Agent-Native Planning
+
+Prefer agent-authored planning for high-value or ambiguous work.
+
+The script should enforce reliability, not own the research judgment. When the task needs real
+decomposition, let the agent decide:
+
+- which threads matter
+- which claims are answer-bearing
+- which subqueries are worth paying for
+- which gaps should remain explicit
+
+Use `--plan-file` to hand an authored plan to the runtime. The runtime validates, persists, and
+queues it; it does not try to out-think the agent.
+
+Recommended plan shape:
+
+```json
+{
+  "plan_id": "landscape-v1",
+  "task_shape": "broad",
+  "summary": "Why these threads matter.",
+  "planning_artifacts": {
+    "comparison_axes": ["pricing", "deployment", "security"]
+  },
+  "remaining_gaps": ["Which claims still need primary sources?"],
+  "threads": [
+    {
+      "title": "Pricing and packaging",
+      "intent": "compare list pricing, packaging, and sales-gated plans",
+      "subqueries": ["vendor pricing", "vendor enterprise plan"],
+      "claims": [
+        {
+          "text": "The leading vendors differ in pricing visibility and enterprise packaging.",
+          "claim_type": "comparison",
+          "priority": "high",
+          "why_it_matters": "Packaging often decides shortlist viability."
+        }
+      ]
+    }
+  ]
+}
+```
+
+If the same authored plan may be retried, include a stable `plan_id` so the runtime can skip
+duplicate application safely.
+
+Use code-driven fallback planning only when a custom agent-authored plan would be overkill.
 
 ## Continuation Rules
 
@@ -61,6 +113,9 @@ Treat `continue` as a durable session mutation.
 - If the instruction asks to verify or double-check, queue claim-level verification work.
 - If the instruction deepens an existing angle, queue follow-up gathering for the relevant thread.
 - If the instruction introduces a new angle, create a follow-up thread and gather evidence for it.
+
+If the next step needs a non-trivial new research shape, prefer `continue --plan-file` over
+trying to encode every decision into one natural-language instruction.
 
 Do not wipe the ledger just because the user asked to go deeper.
 

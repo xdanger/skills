@@ -1,6 +1,9 @@
 /* global process */
 
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 import { createFixtureAdapters } from "./tests/fixtures/provider_fixtures.mjs";
@@ -11,6 +14,7 @@ import {
   runOrchestrator,
 } from "./research_session.mjs";
 import { createSession, queueWorkItem } from "./core/session_schema.mjs";
+import { loadSession } from "./core/session_store.mjs";
 
 async function withMutedStdout(fn) {
   const originalWrite = process.stdout.write;
@@ -27,6 +31,40 @@ test("CLI smoke path keeps public commands stable", async () => {
     await withMutedStdout(async () => {
       await main(
         ["start", "--query", "Is product X SOC 2 certified, and what is the evidence?"],
+        createFixtureAdapters(),
+      );
+    });
+  });
+});
+
+test("CLI accepts an agent-authored plan file on start", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "research-plan-"));
+  const planFile = join(tempDir, "plan.json");
+  writeFileSync(
+    planFile,
+    JSON.stringify({
+      task_shape: "verification",
+      threads: [
+        {
+          title: "Direct answer",
+          intent: "answer the user's question directly from official sources",
+          subqueries: ["product X official SSO docs"],
+          claims: [
+            {
+              text: "Product X supports SSO.",
+              claim_type: "fact",
+              priority: "high",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  await assert.doesNotReject(async () => {
+    await withMutedStdout(async () => {
+      await main(
+        ["start", "--query", "Does product X support SSO?", "--plan-file", planFile],
         createFixtureAdapters(),
       );
     });
@@ -134,4 +172,46 @@ test("completed local sessions reopen and resync the next queued stage", () => {
 
   assert.equal(session.status, "open");
   assert.equal(session.stage, "plan");
+});
+
+test("continue can append an agent-authored follow-up plan", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  const tempDir = mkdtempSync(join(tmpdir(), "research-continue-plan-"));
+  const planFile = join(tempDir, "followup.json");
+  writeFileSync(
+    planFile,
+    JSON.stringify({
+      threads: [
+        {
+          title: "Enterprise rollout",
+          intent: "inspect rollout and enterprise adoption proof points",
+          subqueries: ["AI coding agents enterprise rollout"],
+          claims: [
+            {
+              text: "Enterprise rollout patterns differ across the leading AI coding agents.",
+              claim_type: "comparison",
+              priority: "high",
+            },
+          ],
+        },
+      ],
+      remaining_gaps: ["Need stronger enterprise proof points."],
+    }),
+  );
+
+  await withMutedStdout(async () => {
+    await main(
+      ["continue", "--session-id", session.session_id, "--plan-file", planFile],
+      createFixtureAdapters(),
+    );
+  });
+
+  const updated = loadSession(session.session_id);
+  assert.ok(updated.threads.some((thread) => thread.title === "Enterprise rollout"));
 });

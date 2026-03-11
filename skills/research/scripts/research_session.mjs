@@ -26,7 +26,11 @@ import {
   parseDomainsFromInstruction,
 } from "./core/router.mjs";
 import { createDefaultAdapters } from "./core/providers.mjs";
-import { applyContinuationInstruction, planSession } from "./core/planner.mjs";
+import {
+  applyContinuationInstruction,
+  applyResearchPlan,
+  planSession,
+} from "./core/planner.mjs";
 import { gatherEvidence, recordEvidenceStructures } from "./core/retrieval.mjs";
 import { claimNeedsVerification, reconcileClaims, verifyClaims } from "./core/verifier.mjs";
 import {
@@ -98,6 +102,9 @@ function parseArgs(argv) {
         break;
       case "--payload-file":
         options.payloadFile = rest[++index];
+        break;
+      case "--plan-file":
+        options.planFile = rest[++index];
         break;
       default:
         fail(`Unknown argument: ${arg}`);
@@ -417,6 +424,10 @@ async function cmdStart(args, adapters) {
     depth: args.depth,
     domains: args.domains,
   });
+  if (args.planFile) {
+    const plan = JSON.parse(readFileSync(args.planFile, "utf8"));
+    applyResearchPlan(session, plan, { mode: "replace" });
+  }
   await runOrchestrator(session, adapters);
   printJson(summarizeSession(session));
 }
@@ -433,11 +444,17 @@ async function cmdContinue(args, adapters) {
   }
   const instruction = args.instruction || "";
   const instructionDomains = parseDomainsFromInstruction(instruction);
-  applyContinuationInstruction(session, instruction, instructionDomains);
+  if (instruction) {
+    applyContinuationInstruction(session, instruction, instructionDomains);
+  }
   session.constraints.domains = [
     ...new Set([...session.constraints.domains, ...instructionDomains]),
   ];
-  reopenSessionForContinuation(session, instruction);
+  if (args.planFile) {
+    const plan = JSON.parse(readFileSync(args.planFile, "utf8"));
+    applyResearchPlan(session, plan, { mode: "append" });
+  }
+  reopenSessionForContinuation(session, instruction || "agent-authored follow-up plan");
   await runOrchestrator(session, adapters);
   printJson(summarizeSession(session));
 }
@@ -498,6 +515,9 @@ export async function main(argv = process.argv.slice(2), adapters = createDefaul
   }
   if (args.command === "start" && !args.query) {
     fail("--query is required");
+  }
+  if (args.command === "continue" && !args.instruction && !args.planFile) {
+    fail("--instruction or --plan-file is required");
   }
 
   switch (args.command) {
