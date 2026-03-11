@@ -37,7 +37,7 @@ boundaries, and where different responsibilities belong.
 
 Agent-facing operating instructions, concrete command usage, and workflow details belong in:
 
-- [SKILL.md](/Users/xdanger/repos/xdanger.skills/skills/research/SKILL.md)
+- [SKILL.md](SKILL.md)
 
 ## Design Principles
 
@@ -230,11 +230,11 @@ skills/research/
 
 ## References
 
-- [SKILL.md](/Users/xdanger/repos/xdanger.skills/skills/research/SKILL.md): agent-facing operating
+- [SKILL.md](SKILL.md): agent-facing operating
   instructions
-- [method.md](/Users/xdanger/repos/xdanger.skills/skills/research/references/method.md): research
+- [method.md](references/method.md): research
   loop and evidence standards
-- [providers.md](/Users/xdanger/repos/xdanger.skills/skills/research/references/providers.md):
+- [providers.md](references/providers.md):
   Tavily and Manus roles
-- [refactor-plan.md](/Users/xdanger/repos/xdanger.skills/skills/research/references/refactor-plan.md):
+- [refactor-plan.md](references/refactor-plan.md):
   deeper architectural roadmap
