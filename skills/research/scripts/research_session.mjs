@@ -366,6 +366,20 @@ export async function runOrchestrator(
     }
 
     const workItem = nextQueuedWorkItem(session);
+    const pendingPlanVersionId = session.plan_state?.pending_plan_version_id ?? null;
+    if (
+      session.plan_state?.approval_status === "pending" &&
+      (pendingPlanVersionId || !workItem || workItem.kind !== "plan_session")
+    ) {
+      session.stop_status = {
+        decision: "review",
+        reason: "The session is waiting for plan approval before queued work can run.",
+        open_claim_ids: session.stop_status?.open_claim_ids ?? [],
+        remaining_gaps: session.stop_status?.remaining_gaps ?? [],
+      };
+      break;
+    }
+
     if (!workItem) {
       scoreSession(session);
       updateStopStatus(session);

@@ -178,6 +178,7 @@ function sortEvidence(items, claimText) {
 
 function summarizeEvidence(claim, item) {
   const link = claimLinkForEvidence(item, claim.claim_id);
+  const attribution = link?.attribution ?? item.attribution ?? {};
   return {
     evidence_id: item.evidence_id,
     title: item.title,
@@ -187,6 +188,15 @@ function summarizeEvidence(claim, item) {
     published_at: item.published_at,
     reason: link?.reason ?? "",
     snippet: bestSentenceForClaim(claim.text, item.excerpt),
+    anchor_text: attribution.anchor_text ?? "",
+    matched_sentence: attribution.matched_sentence ?? "",
+    matched_sentence_index: attribution.matched_sentence_index ?? null,
+    matched_tokens: Array.isArray(attribution.matched_tokens) ? attribution.matched_tokens : [],
+    excerpt_method: attribution.excerpt_method ?? "",
+    attribution_confidence:
+      typeof attribution.attribution_confidence === "number"
+        ? attribution.attribution_confidence
+        : null,
   };
 }
 

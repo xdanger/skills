@@ -447,6 +447,7 @@ export function sourcesForSession(session) {
       .map((link) => ({
         claim: getClaimById(session, link.claim_id)?.text ?? "",
         stance: link.stance,
+        attribution: link.attribution ?? null,
       }))
       .filter((link) => link.claim),
     thread_titles: uniqueBy(
@@ -463,5 +464,6 @@ export function sourcesForSession(session) {
     domain: item.domain,
     source_type: item.source_type,
     quality: item.quality,
+    attribution: item.attribution ?? null,
   }));
 }

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-export const SESSION_VERSION = 5;
+export const SESSION_VERSION = 6;
 export const DEFAULT_DEPTH = "standard";
 export const VALID_DEPTHS = new Set(["quick", "standard", "deep"]);
 export const VALID_REPORT_FORMATS = new Set(["md", "json"]);
@@ -115,6 +115,94 @@ function createPlanningArtifacts(value = {}) {
   };
 }
 
+function createSourcePolicy(value = {}, domains = []) {
+  const allowDomains = mergeUniqueStrings(
+    ensureArray(value.allow_domains ?? value.domains),
+    ensureArray(domains),
+  );
+  return {
+    mode: value.mode ?? (allowDomains.length > 0 ? "allowlist" : "open"),
+    allow_domains: allowDomains,
+    preferred_domains: ensureArray(value.preferred_domains),
+    notes: ensureArray(value.notes),
+  };
+}
+
+function createResearchBrief(value = {}, query = "", domains = []) {
+  const now = isoNow();
+  return {
+    objective: value.objective ?? query,
+    deliverable: value.deliverable ?? "report",
+    source_policy: createSourcePolicy(value.source_policy, domains),
+    clarification_notes: ensureArray(value.clarification_notes),
+    created_at: value.created_at ?? now,
+    updated_at: value.updated_at ?? now,
+  };
+}
+
+function createPlanState(value = {}) {
+  return {
+    approval_status: value.approval_status ?? "approved",
+    review_required: Boolean(value.review_required),
+    current_plan_version_id: value.current_plan_version_id ?? null,
+    pending_plan_version_id: value.pending_plan_version_id ?? null,
+    last_prepared_at: value.last_prepared_at ?? null,
+    last_approved_at: value.last_approved_at ?? null,
+  };
+}
+
+function summarizePlanThread(thread = {}) {
+  return {
+    thread_id: thread.thread_id ?? null,
+    title: thread.title ?? "Untitled thread",
+    intent: thread.intent ?? "",
+    subqueries: ensureArray(thread.subqueries),
+    claim_ids: ensureArray(thread.claim_ids),
+  };
+}
+
+function summarizePlanClaim(claim = {}) {
+  return {
+    claim_id: claim.claim_id ?? null,
+    thread_id: claim.thread_id ?? null,
+    text: claim.text ?? "",
+    claim_type: claim.claim_type ?? "fact",
+    priority: claim.priority ?? "medium",
+  };
+}
+
+function normalizePlanVersion(value = {}) {
+  const status = value.status ?? "approved";
+  const createdAt = value.created_at ?? isoNow();
+  return {
+    plan_version_id: value.plan_version_id ?? createId("planv"),
+    plan_id: value.plan_id ?? null,
+    source: value.source ?? "runtime_fallback",
+    mode: value.mode ?? "replace",
+    status,
+    goal: value.goal ?? "",
+    task_shape: value.task_shape ?? null,
+    summary: value.summary ?? "",
+    threads: ensureArray(value.threads).map((thread) => summarizePlanThread(thread)),
+    claims: ensureArray(value.claims).map((claim) => summarizePlanClaim(claim)),
+    remaining_gaps: ensureArray(value.remaining_gaps),
+    created_at: createdAt,
+    approved_at:
+      value.approved_at ?? (status === "approved" ? createdAt : null),
+  };
+}
+
+function normalizeActivityEntry(value = {}) {
+  return {
+    activity_id: value.activity_id ?? createId("activity"),
+    type: value.type ?? "note",
+    stage: value.stage ?? null,
+    summary: value.summary ?? "",
+    metadata: value.metadata ?? {},
+    created_at: value.created_at ?? isoNow(),
+  };
+}
+
 function createScores(value = {}) {
   return {
     claim_coverage_score: Number(value.claim_coverage_score ?? 0),
@@ -158,6 +246,15 @@ function normalizeFindingEvidenceItem(item = {}) {
     published_at: item.published_at ?? null,
     reason: item.reason ?? "",
     snippet: item.snippet ?? "",
+    anchor_text: item.anchor_text ?? "",
+    matched_sentence: item.matched_sentence ?? "",
+    matched_sentence_index: Number.isFinite(item.matched_sentence_index)
+      ? item.matched_sentence_index
+      : null,
+    matched_tokens: ensureArray(item.matched_tokens),
+    excerpt_method: item.excerpt_method ?? "",
+    attribution_confidence:
+      typeof item.attribution_confidence === "number" ? item.attribution_confidence : null,
   };
 }
 
@@ -226,6 +323,7 @@ function normalizeClaimLinks(item = {}) {
           claim_id: link.claim_id ?? null,
           stance: normalizeStance(link.stance),
           reason: link.reason ?? link.why_matched ?? "",
+          attribution: normalizeEvidenceAttribution(link.attribution ?? link),
         }))
         .filter((link) => link.claim_id),
       (link) => `${link.claim_id}|${link.stance}|${link.reason}`,
@@ -252,6 +350,7 @@ function normalizeClaimLinks(item = {}) {
         claim_id: item.claim_id,
         stance: normalizeStance(item.stance),
         reason: item.why_matched ?? "Upgraded from a single-claim legacy evidence record.",
+        attribution: normalizeEvidenceAttribution(item.attribution ?? item),
       },
     ];
   }
@@ -259,9 +358,33 @@ function normalizeClaimLinks(item = {}) {
   return [];
 }
 
+function normalizeEvidenceAttribution(attribution = {}, excerpt = "") {
+  const fallbackAnchor =
+    attribution.anchor_text ?? attribution.matched_sentence ?? String(excerpt).trim();
+  return {
+    anchor_text: fallbackAnchor ? String(fallbackAnchor) : "",
+    matched_sentence:
+      attribution.matched_sentence ?? (fallbackAnchor ? String(fallbackAnchor) : ""),
+    matched_sentence_index: Number.isFinite(attribution.matched_sentence_index)
+      ? attribution.matched_sentence_index
+      : null,
+    matched_tokens: ensureArray(attribution.matched_tokens),
+    excerpt_method:
+      attribution.excerpt_method ??
+      (fallbackAnchor ? "sentence_match" : String(excerpt).trim() ? "raw_excerpt" : "none"),
+    attribution_confidence:
+      typeof attribution.attribution_confidence === "number"
+        ? Number(attribution.attribution_confidence.toFixed(2))
+        : null,
+  };
+}
+
 function normalizeEvidenceRecord(item, index = 0) {
   const sourceType =
     item.source_type ?? (item.domain === "tavily" || item.url === "" ? "synthetic" : "vendor");
+  const claimLinks = normalizeClaimLinks(item);
+  const primaryLink =
+    claimLinks.find((link) => link.stance !== "context") ?? claimLinks[0] ?? null;
   return {
     evidence_id: item.evidence_id ?? createId(`evidence${index + 1}`),
     run_id: item.run_id ?? `legacy-run-${index + 1}`,
@@ -273,7 +396,11 @@ function normalizeEvidenceRecord(item, index = 0) {
     quality: item.quality ?? (sourceType === "synthetic" ? "low" : "medium"),
     retrieval_score: item.retrieval_score ?? item.search_score ?? null,
     published_at: item.published_at ?? item.source_date ?? null,
-    claim_links: normalizeClaimLinks(item),
+    claim_links: claimLinks,
+    attribution: normalizeEvidenceAttribution(
+      item.attribution ?? primaryLink?.attribution ?? {},
+      item.excerpt ?? item.snippet ?? item.summary ?? "",
+    ),
     provenance: {
       query: item.provenance?.query ?? null,
       strategy:
@@ -405,6 +532,23 @@ function normalizeContinuation(continuation) {
     created_thread_ids: ensureArray(continuation.created_thread_ids),
     stale_claim_ids: ensureArray(continuation.stale_claim_ids),
     notes: ensureArray(continuation.notes),
+    operations: ensureArray(continuation.operations).map((operation) =>
+      normalizeContinuationOperation(operation),
+    ),
+  };
+}
+
+function normalizeContinuationOperation(operation = {}) {
+  return {
+    operation_id: operation.operation_id ?? createId("contop"),
+    type: operation.type ?? "note",
+    target_thread_id: operation.target_thread_id ?? operation.thread_id ?? null,
+    target_claim_id: operation.target_claim_id ?? operation.claim_id ?? null,
+    domains: ensureArray(operation.domains),
+    note: operation.note ?? "",
+    gap: operation.gap ?? "",
+    reason: operation.reason ?? "",
+    payload: operation.payload ?? operation.thread ?? operation.value ?? {},
   };
 }
 
@@ -471,6 +615,122 @@ export function appendDecision(session, action, rationale, details = {}) {
     rationale,
     details,
   });
+}
+
+export function appendActivity(session, type, summary, metadata = {}, stage = session.stage) {
+  const entry = normalizeActivityEntry({
+    type,
+    stage: stage ?? null,
+    summary,
+    metadata,
+  });
+  session.activity_history.push(entry);
+  return entry;
+}
+
+export function syncResearchBrief(session) {
+  const objective = session.goal || session.user_query || session.research_brief?.objective || "";
+  session.research_brief = createResearchBrief(
+    {
+      ...session.research_brief,
+      objective,
+    },
+    objective,
+    session.constraints?.domains ?? [],
+  );
+  session.research_brief.updated_at = isoNow();
+  return session.research_brief;
+}
+
+export function recordPlanVersion(
+  session,
+  {
+    planId = null,
+    source = "runtime_fallback",
+    mode = "replace",
+    status = session.plan_state?.approval_status === "pending" ? "pending_approval" : "approved",
+    summary = "",
+    threads = [],
+    claims = [],
+    remainingGaps = [],
+  } = {},
+) {
+  const pendingId = session.plan_state?.pending_plan_version_id ?? null;
+  if (pendingId) {
+    const pendingVersion = session.plan_versions.find(
+      (version) => version.plan_version_id === pendingId,
+    );
+    if (pendingVersion && pendingVersion.status === "pending_approval") {
+      pendingVersion.status = "superseded";
+    }
+  }
+
+  const version = normalizePlanVersion({
+    plan_id: planId,
+    source,
+    mode,
+    status,
+    summary,
+    goal: session.goal,
+    task_shape: session.task_shape,
+    threads,
+    claims,
+    remaining_gaps: remainingGaps,
+  });
+  session.plan_versions.push(version);
+  session.plan_state.current_plan_version_id = version.plan_version_id;
+
+  if (status === "pending_approval") {
+    session.plan_state.approval_status = "pending";
+    session.plan_state.review_required = true;
+    session.plan_state.pending_plan_version_id = version.plan_version_id;
+    session.plan_state.last_prepared_at = version.created_at;
+  } else {
+    session.plan_state.approval_status = "approved";
+    session.plan_state.review_required = false;
+    session.plan_state.pending_plan_version_id = null;
+    session.plan_state.last_approved_at = version.approved_at ?? version.created_at;
+  }
+
+  appendActivity(session, "plan_version_recorded", "Recorded a research plan snapshot.", {
+    plan_version_id: version.plan_version_id,
+    plan_id: version.plan_id,
+    source: version.source,
+    status: version.status,
+    thread_count: version.threads.length,
+    claim_count: version.claims.length,
+  });
+  return version;
+}
+
+export function approvePendingPlan(session) {
+  const pendingId = session.plan_state?.pending_plan_version_id ?? null;
+  if (!pendingId) {
+    fail("This session does not have a pending research plan to approve.");
+  }
+  const version = session.plan_versions.find((item) => item.plan_version_id === pendingId);
+  if (!version) {
+    fail("The pending research plan snapshot could not be found.");
+  }
+  version.status = "approved";
+  version.approved_at = isoNow();
+  session.plan_state.approval_status = "approved";
+  session.plan_state.review_required = false;
+  session.plan_state.pending_plan_version_id = null;
+  session.plan_state.current_plan_version_id = version.plan_version_id;
+  session.plan_state.last_approved_at = version.approved_at;
+  appendActivity(session, "plan_approved", "Approved the pending research plan.", {
+    plan_version_id: version.plan_version_id,
+    plan_id: version.plan_id,
+  });
+  queueWorkItem(session, {
+    kind: "plan_session",
+    scopeType: "session",
+    scopeId: session.session_id,
+    keySuffix: "approved-resume",
+    reason: "The prepared research plan was approved; resume orchestration.",
+  });
+  return version;
 }
 
 export function getHighPriorityClaims(session) {
@@ -787,6 +1047,18 @@ function normalizeThreadsAndClaims(session) {
 }
 
 function normalizeLedgerFields(session) {
+  session.research_brief = createResearchBrief(
+    session.research_brief,
+    session.user_query ?? session.goal ?? "",
+    session.constraints?.domains ?? [],
+  );
+  session.plan_state = createPlanState(session.plan_state);
+  session.plan_versions = ensureArray(session.plan_versions).map((item) =>
+    normalizePlanVersion(item),
+  );
+  session.activity_history = ensureArray(session.activity_history).map((item) =>
+    normalizeActivityEntry(item),
+  );
   session.planning_artifacts = createPlanningArtifacts(session.planning_artifacts);
   session.candidate_urls = ensureArray(session.candidate_urls).map((item) =>
     normalizeCandidateUrl(item),
@@ -918,7 +1190,7 @@ function recoverInFlightState(session) {
   }
 }
 
-export function createSession({ query, depth, domains }) {
+export function createSession({ query, depth, domains, approvalMode = "approved" }) {
   assertValidDepth(depth);
   const now = isoNow();
   const sessionId = createId("research");
@@ -929,6 +1201,13 @@ export function createSession({ query, depth, domains }) {
     stage: "plan",
     task_shape: null,
     goal: "",
+    research_brief: createResearchBrief({}, query, domains),
+    plan_state: createPlanState({
+      approval_status: approvalMode,
+      review_required: approvalMode === "pending",
+    }),
+    plan_versions: [],
+    activity_history: [],
     constraints: {
       depth,
       domains,
@@ -966,6 +1245,11 @@ export function createSession({ query, depth, domains }) {
     user_query: query,
   };
   syncSessionStage(session);
+  appendActivity(session, "session_created", "Created a research session.", {
+    approval_status: session.plan_state.approval_status,
+    depth,
+    domains,
+  });
   return session;
 }
 
@@ -981,6 +1265,10 @@ export function upgradeSession(rawSession) {
     stage: VALID_STAGES.has(rawSession.stage) ? rawSession.stage : "plan",
     task_shape: rawSession.task_shape ?? inferLegacyTaskShape(rawSession),
     goal: rawSession.goal ?? rawSession.user_query ?? "",
+    research_brief: rawSession.research_brief,
+    plan_state: rawSession.plan_state,
+    plan_versions: rawSession.plan_versions,
+    activity_history: rawSession.activity_history,
     constraints: {
       depth: rawSession.constraints?.depth ?? rawSession.depth ?? DEFAULT_DEPTH,
       domains: ensureArray(rawSession.constraints?.domains ?? rawSession.domains),
@@ -1013,6 +1301,7 @@ export function upgradeSession(rawSession) {
 
   normalizeThreadsAndClaims(upgraded);
   normalizeLedgerFields(upgraded);
+  syncResearchBrief(upgraded);
   syncClaimEvidenceIds(upgraded);
 
   if (upgraded.work_items.length === 0) {

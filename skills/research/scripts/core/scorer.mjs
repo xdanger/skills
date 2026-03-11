@@ -178,7 +178,9 @@ export function updateStopStatus(session) {
           : "High-priority claims are sufficiently supported with acceptable primary-source coverage."
         : "Important claims remain unresolved, tentative, contradictory, stale, or under-evidenced.",
     open_claim_ids: openClaims.map((claim) => claim.claim_id),
-    remaining_gaps: openClaims.map((claim) => claim.text),
+    remaining_gaps: [
+      ...new Set([...session.stop_status.remaining_gaps, ...openClaims.map((claim) => claim.text)]),
+    ],
   };
   return session.stop_status;
 }

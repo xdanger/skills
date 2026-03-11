@@ -13,7 +13,12 @@ import {
   rejoinRemoteResults,
   runOrchestrator,
 } from "./research_session.mjs";
-import { createSession, queueWorkItem } from "./core/session_schema.mjs";
+import { applyResearchPlan } from "./core/planner.mjs";
+import {
+  approvePendingPlan,
+  createSession,
+  queueWorkItem,
+} from "./core/session_schema.mjs";
 import { loadSession } from "./core/session_store.mjs";
 
 async function withMutedStdout(fn) {
@@ -174,6 +179,143 @@ test("completed local sessions reopen and resync the next queued stage", () => {
   assert.equal(session.stage, "plan");
 });
 
+test("pending approval sessions do not execute queued work", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  assert.equal(session.work_items[0]?.status, "completed");
+  assert.equal(session.stop_status.decision, "review");
+  assert.equal(session.plan_state.pending_plan_version_id !== null, true);
+
+  approvePendingPlan(session);
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  assert.ok(session.work_items.some((item) => item.kind === "gather_thread"));
+});
+
+test("approved agent-authored pending plans survive resume", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Enterprise rollout",
+        intent: "inspect rollout and enterprise adoption proof points",
+        subqueries: ["AI coding agents enterprise rollout"],
+        claims: [
+          {
+            text: "Enterprise rollout patterns differ across the leading AI coding agents.",
+            claim_type: "comparison",
+            priority: "high",
+          },
+        ],
+      },
+    ],
+    remaining_gaps: ["Need stronger enterprise proof points."],
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  assert.equal(session.stop_status.decision, "review");
+  assert.ok(session.threads.some((thread) => thread.title === "Enterprise rollout"));
+
+  approvePendingPlan(session);
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  assert.ok(session.threads.some((thread) => thread.title === "Enterprise rollout"));
+  assert.ok(session.work_items.some((item) => item.kind === "gather_thread"));
+});
+
+test("continue is blocked while a plan approval is pending", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  await assert.rejects(
+    () =>
+      withMutedStdout(async () => {
+        await main(
+          [
+            "continue",
+            "--session-id",
+            session.session_id,
+            "--instruction",
+            "Dig deeper on pricing",
+          ],
+          createFixtureAdapters(),
+        );
+      }),
+    /pending plan approval/u,
+  );
+});
+
+test("structured continuation patches are blocked while a plan approval is pending", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  const tempDir = mkdtempSync(join(tmpdir(), "research-pending-patch-"));
+  const patchFile = join(tempDir, "patch.json");
+  writeFileSync(
+    patchFile,
+    JSON.stringify({
+      continuation_patch: {
+        instruction: "Add a pricing thread",
+        operations: [
+          {
+            type: "add_thread",
+            thread: {
+              title: "Pricing",
+              intent: "compare pricing models",
+              subqueries: ["AI coding agents pricing"],
+              claims: [
+                {
+                  text: "Pricing models differ across the leading AI coding agents.",
+                  claim_type: "comparison",
+                  priority: "high",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    }),
+  );
+
+  await assert.rejects(
+    () =>
+      withMutedStdout(async () => {
+        await main(
+          ["continue", "--session-id", session.session_id, "--plan-file", patchFile],
+          createFixtureAdapters(),
+        );
+      }),
+    /pending plan approval/u,
+  );
+});
+
 test("continue can append an agent-authored follow-up plan", async () => {
   const session = createSession({
     query: "Research AI coding agents",
@@ -214,4 +356,58 @@ test("continue can append an agent-authored follow-up plan", async () => {
 
   const updated = loadSession(session.session_id);
   assert.ok(updated.threads.some((thread) => thread.title === "Enterprise rollout"));
+});
+
+test("continue can apply a structured continuation patch file", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  const targetClaim = session.claims[0];
+  const targetThread = session.threads[0];
+  const tempDir = mkdtempSync(join(tmpdir(), "research-continue-patch-"));
+  const patchFile = join(tempDir, "patch.json");
+  writeFileSync(
+    patchFile,
+    JSON.stringify({
+      continuation_patch: {
+        instruction: "Re-check workflow fit and add deployment",
+        operations: [
+          { type: "merge_domains", domains: ["docs.example.com"] },
+          { type: "mark_claim_stale", claim_id: targetClaim.claim_id },
+          { type: "requeue_thread", thread_id: targetThread.thread_id },
+          {
+            type: "add_thread",
+            thread: {
+              title: "Deployment",
+              intent: "inspect deployment models",
+              subqueries: ["AI coding agents deployment models"],
+              claims: [
+                {
+                  text: "Deployment models differ across leading AI coding agents.",
+                  claim_type: "comparison",
+                  priority: "high",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    }),
+  );
+
+  await withMutedStdout(async () => {
+    await main(
+      ["continue", "--session-id", session.session_id, "--plan-file", patchFile],
+      createFixtureAdapters(),
+    );
+  });
+
+  const updated = loadSession(session.session_id);
+  assert.ok(updated.constraints.domains.includes("docs.example.com"));
+  assert.ok(updated.threads.some((thread) => thread.title === "Deployment"));
+  assert.ok(updated.continuations.at(-1)?.operations.length >= 3);
 });

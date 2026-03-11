@@ -13,9 +13,14 @@ Use this compact loop for every session:
 
 Track at least these fields in the session:
 
+- `research_brief`
+- `plan_state`
+- `plan_versions`
+- `activity_history`
 - `goal`
 - `threads`
 - `claims`
+- `continuations[]`
 - `planning_artifacts.hypotheses`
 - `candidate_urls`
 - `evidence`
@@ -33,6 +38,19 @@ Use simple source quality notes in the ledger:
 
 Prefer multiple domains for important claims. If a high-priority claim depends on one low-quality source, keep it unresolved.
 
+For inspectable evidence, store attribution fields when the runtime can infer them:
+
+- `anchor_text`
+- `matched_sentence`
+- `matched_sentence_index`
+- `matched_tokens`
+- `excerpt_method`
+- `attribution_confidence`
+
+Make those fields visible in the outputs another agent is likely to consume, not only in raw
+session state. Findings and source listings should preserve the best available attribution anchor
+for each claim/source pair.
+
 ## Contradictions
 
 When two sources disagree:
@@ -40,6 +58,18 @@ When two sources disagree:
 1. Record the contradiction explicitly.
 2. Search for a tie-breaker source that is more primary or more recent.
 3. If the conflict remains, lower confidence instead of forcing a conclusion.
+
+## Continuation Patches
+
+Treat continuation as a structured mutation when the next step is already known.
+
+Useful operations in the current runtime:
+
+- merge domains
+- mark a claim stale for re-verification
+- requeue a thread for another gather pass
+- record an explicit gap or note
+- add a new thread with answer-bearing claims
 
 ## Stopping Criteria
 

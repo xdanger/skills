@@ -13,6 +13,9 @@ test("inferClaimMatch marks direct positive evidence as support", () => {
 
   assert.equal(result.stance, "support");
   assert.match(result.whyMatched, /product|certified/iu);
+  assert.equal(result.attribution.excerpt_method, "sentence_token_match");
+  assert.match(result.attribution.anchor_text, /SOC 2 certified/iu);
+  assert.ok(result.attribution.attribution_confidence >= 0.5);
 });
 
 test("inferClaimMatch marks local negative evidence as oppose", () => {
@@ -24,6 +27,7 @@ test("inferClaimMatch marks local negative evidence as oppose", () => {
   );
 
   assert.equal(result.stance, "oppose");
+  assert.match(result.attribution.anchor_text, /not SOC 2 certified/iu);
 });
 
 test("inferClaimMatch falls back to context when the claim is not locally grounded", () => {
@@ -35,6 +39,7 @@ test("inferClaimMatch falls back to context when the claim is not locally ground
   );
 
   assert.equal(result.stance, "context");
+  assert.ok(result.attribution.attribution_confidence <= 0.3);
 });
 
 test("inferClaimMatch requires concrete endpoint detail for endpoint-style claims", () => {

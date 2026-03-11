@@ -13,6 +13,7 @@ import {
   inferClaimMatch,
   inferQuality,
   inferSourceType,
+  mergeEvidenceRecords,
   recordEvidenceStructures,
 } from "./retrieval.mjs";
 import { URL } from "node:url";
@@ -272,8 +273,10 @@ function buildVerificationEvidence({
         claim_id: claim.claim_id,
         stance: match.stance,
         reason: `Verification query targeted the claim directly. ${match.whyMatched}`,
+        attribution: match.attribution,
       },
     ],
+    attribution: match.attribution,
     provenance: {
       query,
       strategy: "claim_verification",
@@ -407,13 +410,7 @@ export async function verifyClaims(session, runtime, workItem) {
       searchScore: selected.find((candidate) => candidate.url === item.url)?.score ?? null,
     }),
   );
-  session.evidence = uniqueBy(
-    [...session.evidence, ...evidenceItems],
-    (item) =>
-      `${item.url}|${item.title}|${item.excerpt}|${item.claim_links
-        .map((link) => `${link.claim_id}:${link.stance}`)
-        .join(",")}`,
-  );
+  session.evidence = mergeEvidenceRecords(session.evidence, evidenceItems);
   recordEvidenceStructures(
     session,
     session.threads.find((thread) => thread.thread_id === claim.thread_id) ?? {

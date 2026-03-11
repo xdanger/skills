@@ -30,6 +30,7 @@ node "$SCRIPT" status --session-id <session_id>
 node "$SCRIPT" continue --session-id <session_id> --instruction "Dig deeper on pricing"
 node "$SCRIPT" start --query "Does product X support SSO?" --plan-file /path/to/plan.json
 node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/followup-plan.json
+node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/continuation-patch.json
 node "$SCRIPT" rejoin --session-id <session_id> --payload-file /path/to/remote-result.json
 node "$SCRIPT" report --session-id <session_id>
 node "$SCRIPT" sources --session-id <session_id>
@@ -105,12 +106,80 @@ Treat `continue` as a durable mutation of the same session.
 
 Do not wipe the ledger because the user said “continue.”
 
+When the next step is already clear, prefer a machine-readable continuation patch instead of
+forcing the runtime to infer intent from prose.
+
+Minimal continuation patch shape:
+
+```json
+{
+  "continuation_patch": {
+    "instruction": "Re-check pricing and add an enterprise controls thread",
+    "operations": [
+      {
+        "type": "merge_domains",
+        "domains": ["openai.com", "anthropic.com"]
+      },
+      {
+        "type": "mark_claim_stale",
+        "claim_id": "claim-123"
+      },
+      {
+        "type": "requeue_thread",
+        "thread_id": "thread-123"
+      },
+      {
+        "type": "add_gap",
+        "gap": "Need fresher enterprise controls evidence."
+      },
+      {
+        "type": "add_thread",
+        "thread": {
+          "title": "Enterprise controls",
+          "intent": "compare SSO, RBAC, and audit controls",
+          "subqueries": ["vendor enterprise controls"],
+          "claims": [
+            {
+              "text": "Enterprise controls differ across the leading vendors.",
+              "claim_type": "comparison",
+              "priority": "high"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+Supported operations in this first slice:
+
+- `merge_domains`
+- `mark_claim_stale`
+- `requeue_thread`
+- `add_gap`
+- `note`
+- `add_thread`
+
 ## Evidence Rules
 
 - Treat Tavily Research as planning help, not evidence.
 - Only URL-backed evidence should move claim state or confidence.
 - Keep contradictions explicit.
 - If source quality is weak or one claim depends on one thin source, keep it unresolved.
+- Preserve attribution anchors with the evidence when possible:
+  `anchor_text`, `matched_sentence`, `excerpt_method`, and `attribution_confidence`.
+- Surface those attribution fields in findings, source listings, or other agent-facing evidence
+  views whenever possible, not only in raw session JSON.
+- Treat attribution as best-effort support metadata, not as proof that the runtime fully
+  understands the source.
+
+The session ledger now also persists a lightweight control plane:
+
+- `research_brief`
+- `plan_state`
+- `plan_versions`
+- `activity_history`
 
 ## Routing
 

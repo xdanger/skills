@@ -1,10 +1,12 @@
 import {
   appendDecision,
   createId,
+  ensureArray,
   fail,
   getThreadById,
   mergeUniqueStrings,
   queueWorkItem,
+  recordPlanVersion,
   syncSessionStage,
   uniqueBy,
 } from "./session_schema.mjs";
@@ -606,11 +608,280 @@ function queueThreadsForGathering(session, threads, parentWorkItemId = null, rea
   }
 }
 
+function requiresPlanApproval(session) {
+  return session.plan_state?.approval_status === "pending";
+}
+
+function ensureNotAwaitingPlanApproval(session) {
+  if (requiresPlanApproval(session) && session.plan_state?.pending_plan_version_id) {
+    fail("This session has a pending plan approval. Approve the prepared plan before mutating it.");
+  }
+}
+
+function looksLikeContinuationPatch(rawPlan = {}) {
+  if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
+    return false;
+  }
+  return Boolean(rawPlan.continuation_patch && typeof rawPlan.continuation_patch === "object");
+}
+
+function compileContinuationOperation(operation = {}) {
+  if (!operation || typeof operation !== "object" || Array.isArray(operation)) {
+    fail("Continuation patch operations must be JSON objects.");
+  }
+  const type = String(operation.type ?? "").trim();
+  if (!type) {
+    fail("Continuation patch operation is missing `type`.");
+  }
+
+  if (type === "merge_domains") {
+    const domains = mergeUniqueStrings(
+      [],
+      operation.domains?.map((item) => String(item).trim()).filter(Boolean) ?? [],
+    );
+    if (domains.length === 0) {
+      fail("Continuation patch operation `merge_domains` requires `domains`.");
+    }
+    return {
+      type,
+      domains,
+      reason: String(operation.reason ?? "Continuation narrowed or expanded the source scope."),
+    };
+  }
+
+  if (type === "add_gap") {
+    const gap = String(operation.gap ?? operation.text ?? "").trim();
+    if (!gap) {
+      fail("Continuation patch operation `add_gap` requires `gap`.");
+    }
+    return {
+      type,
+      gap,
+      reason: String(operation.reason ?? "Continuation recorded an explicit evidence gap."),
+    };
+  }
+
+  if (type === "note") {
+    const note = String(operation.note ?? operation.text ?? "").trim();
+    if (!note) {
+      fail("Continuation patch operation `note` requires `note`.");
+    }
+    return {
+      type,
+      note,
+      reason: String(operation.reason ?? "Continuation recorded a follow-up note."),
+    };
+  }
+
+  if (type === "mark_claim_stale") {
+    const claimId = String(operation.claim_id ?? "").trim();
+    if (!claimId) {
+      fail("Continuation patch operation `mark_claim_stale` requires `claim_id`.");
+    }
+    return {
+      type,
+      claim_id: claimId,
+      reason: String(operation.reason ?? "Continuation requested claim re-verification."),
+    };
+  }
+
+  if (type === "requeue_thread") {
+    const threadId = String(operation.thread_id ?? "").trim();
+    if (!threadId) {
+      fail("Continuation patch operation `requeue_thread` requires `thread_id`.");
+    }
+    return {
+      type,
+      thread_id: threadId,
+      reason: String(operation.reason ?? "Continuation requested a deeper gather pass."),
+    };
+  }
+
+  if (type === "add_thread") {
+    const spec = operation.thread ?? operation.payload ?? {};
+    const thread = createThreadFromSpec(spec);
+    const rawClaims = Array.isArray(spec.claims) ? spec.claims : [];
+    if (rawClaims.length === 0) {
+      fail("Continuation patch operation `add_thread` requires at least one claim.");
+    }
+    const claims = rawClaims.map((item) => createClaimFromSpec(thread.thread_id, item));
+    thread.claim_ids = claims.map((item) => item.claim_id);
+    thread.execution.open_claim_ids = [...thread.claim_ids];
+    return {
+      type,
+      thread,
+      claims,
+      reason: String(operation.reason ?? `Continuation created a new thread: ${thread.title}`),
+    };
+  }
+
+  fail(`Unsupported continuation patch operation: ${type}`);
+}
+
+function compileContinuationPatch(rawPatch = {}) {
+  const patch =
+    rawPatch?.continuation_patch && typeof rawPatch.continuation_patch === "object"
+      ? rawPatch.continuation_patch
+      : rawPatch;
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    fail("Continuation patch must be a JSON object.");
+  }
+  const operations = ensureArray(patch.operations).map((item) => compileContinuationOperation(item));
+  if (operations.length === 0) {
+    fail("Continuation patch must include a non-empty `operations` array.");
+  }
+  return {
+    instruction: String(patch.instruction ?? rawPatch.instruction ?? "").trim(),
+    mode: String(patch.mode ?? "deepen").trim() || "deepen",
+    domains: mergeUniqueStrings(
+      ensureArray(patch.domains).map((item) => String(item).trim()).filter(Boolean),
+      operations.flatMap((operation) => operation.domains ?? []),
+    ),
+    notes: ensureArray(patch.notes).map((item) => String(item).trim()).filter(Boolean),
+    operations,
+  };
+}
+
+function applyContinuationPatch(
+  session,
+  rawPatch,
+  { parentWorkItemId = null, action = "continuation_patch" } = {},
+) {
+  const compiled = compileContinuationPatch(rawPatch);
+  const continuation = {
+    continuation_id: createId("continuation"),
+    instruction: compiled.instruction,
+    mode: compiled.mode,
+    created_at: new Date().toISOString(),
+    applied_at: new Date().toISOString(),
+    domains: compiled.domains,
+    affected_thread_ids: [],
+    created_thread_ids: [],
+    stale_claim_ids: [],
+    notes: [...compiled.notes],
+    operations: [],
+  };
+  session.continuations.push(continuation);
+
+  if (compiled.instruction) {
+    session.planning_artifacts.continuation_notes = mergeUniqueStrings(
+      session.planning_artifacts.continuation_notes,
+      [compiled.instruction],
+    );
+  }
+
+  for (const operation of compiled.operations) {
+    continuation.operations.push(operation);
+
+    if (operation.type === "merge_domains") {
+      session.constraints.domains = mergeUniqueStrings(session.constraints.domains, operation.domains);
+      continue;
+    }
+
+    if (operation.type === "add_gap") {
+      session.stop_status.remaining_gaps = mergeUniqueStrings(session.stop_status.remaining_gaps, [
+        operation.gap,
+      ]);
+      continue;
+    }
+
+    if (operation.type === "note") {
+      continuation.notes.push(operation.note);
+      session.planning_artifacts.continuation_notes = mergeUniqueStrings(
+        session.planning_artifacts.continuation_notes,
+        [operation.note],
+      );
+      continue;
+    }
+
+    if (operation.type === "mark_claim_stale") {
+      const claim = session.claims.find((item) => item.claim_id === operation.claim_id);
+      if (!claim) {
+        fail(`Continuation patch referenced an unknown claim: ${operation.claim_id}`);
+      }
+      claim.verification.stale = true;
+      claim.verification.status = "queued";
+      claim.verification.last_continuation_id = continuation.continuation_id;
+      continuation.stale_claim_ids.push(claim.claim_id);
+      queueWorkItem(session, {
+        kind: "verify_claim",
+        scopeType: "claim",
+        scopeId: claim.claim_id,
+        continuationId: continuation.continuation_id,
+        reason: operation.reason,
+        dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+      });
+      continue;
+    }
+
+    if (operation.type === "requeue_thread") {
+      const thread = getThreadById(session, operation.thread_id);
+      if (!thread) {
+        fail(`Continuation patch referenced an unknown thread: ${operation.thread_id}`);
+      }
+      thread.execution.gather_status = "queued";
+      thread.execution.last_continuation_id = continuation.continuation_id;
+      continuation.affected_thread_ids.push(thread.thread_id);
+      queueWorkItem(session, {
+        kind: "gather_thread",
+        scopeType: "thread",
+        scopeId: thread.thread_id,
+        continuationId: continuation.continuation_id,
+        keySuffix: `round-${thread.execution.gather_rounds + 1}`,
+        reason: operation.reason,
+        dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+      });
+      continue;
+    }
+
+    if (operation.type === "add_thread") {
+      session.threads.push(operation.thread);
+      session.claims.push(...operation.claims);
+      continuation.created_thread_ids.push(operation.thread.thread_id);
+      queueWorkItem(session, {
+        kind: "gather_thread",
+        scopeType: "thread",
+        scopeId: operation.thread.thread_id,
+        continuationId: continuation.continuation_id,
+        keySuffix: `round-${operation.thread.execution.gather_rounds + 1}`,
+        reason: operation.reason,
+        dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+      });
+    }
+  }
+
+  appendDecision(
+    session,
+    action,
+    compiled.instruction
+      ? `Applied continuation mutation: ${compiled.instruction}`
+      : "Applied a structured continuation mutation patch.",
+    {
+      continuation_id: continuation.continuation_id,
+      mode: continuation.mode,
+      operation_count: continuation.operations.length,
+      affected_thread_ids: continuation.affected_thread_ids,
+      created_thread_ids: continuation.created_thread_ids,
+      stale_claim_ids: continuation.stale_claim_ids,
+      domains: continuation.domains,
+    },
+  );
+  syncSessionStage(session);
+  return continuation;
+}
+
 export function applyResearchPlan(
   session,
   rawPlan,
   { mode = "replace", parentWorkItemId = null } = {},
 ) {
+  ensureNotAwaitingPlanApproval(session);
+  if (looksLikeContinuationPatch(rawPlan)) {
+    return applyContinuationPatch(session, rawPlan, {
+      parentWorkItemId,
+      action: "continuation_patch",
+    });
+  }
   const compiled = compileAgentPlan(rawPlan);
   const isAppend = mode === "append";
   if (!isAppend && mode !== "replace") {
@@ -699,6 +970,40 @@ export function applyResearchPlan(
   );
   if (session.planning_artifacts.comparison_axes.length === 0 && session.task_shape) {
     session.planning_artifacts.comparison_axes = defaultComparisonAxes(session.task_shape);
+  }
+
+  if (requiresPlanApproval(session)) {
+    recordPlanVersion(session, {
+      planId: compiled.plan_id || null,
+      source: "agent_authored",
+      mode,
+      status: "pending_approval",
+      summary:
+        compiled.summary ||
+        (isAppend
+          ? "Prepared an agent-authored follow-up research plan for approval."
+          : "Prepared an agent-authored research plan for approval."),
+      threads: compiled.threads,
+      claims: compiled.claims,
+      remainingGaps: compiled.remainingGaps,
+    });
+    appendDecision(
+      session,
+      "agent_plan_prepare",
+      isAppend
+        ? "Prepared an agent-authored follow-up plan and paused for approval."
+        : "Prepared an agent-authored plan and paused for approval.",
+      {
+        mode,
+        plan_id: compiled.plan_id || null,
+        task_shape: session.task_shape,
+        thread_count: compiled.threads.length,
+        claim_count: compiled.claims.length,
+        summary: compiled.summary,
+      },
+    );
+    syncSessionStage(session);
+    return compiled;
   }
 
   if (session.task_shape === "async") {
@@ -794,6 +1099,25 @@ export async function planSession(session, runtime, workItem = null) {
     }
   }
 
+  if (requiresPlanApproval(session)) {
+    recordPlanVersion(session, {
+      source: "runtime_fallback",
+      mode: "replace",
+      status: "pending_approval",
+      summary: "Prepared a runtime-generated research plan for approval.",
+      threads: session.threads,
+      claims: session.claims,
+      remainingGaps: session.stop_status.remaining_gaps,
+    });
+    appendDecision(session, "plan_prepare", "Prepared a research plan and paused for approval.", {
+      task_shape: session.task_shape,
+      thread_count: session.threads.length,
+      claim_count: session.claims.length,
+    });
+    syncSessionStage(session);
+    return;
+  }
+
   queuePlanWork(session, workItem?.work_item_id ?? null);
   appendDecision(session, "plan", "Generated answer-bearing threads and queued work items.", {
     task_shape: session.task_shape,
@@ -835,25 +1159,24 @@ function matchingClaims(session, instruction) {
     .map((item) => item.claim);
 }
 
-function createContinuationThread(session, continuation) {
-  const title = continuation.instruction.slice(0, 72);
-  const thread = createThread(
-    `Follow-up: ${title}`,
-    `address the continuation instruction: ${continuation.instruction}`,
-    [continuation.instruction],
-    "Created from a continuation instruction.",
-  );
-  const claimText =
-    continuation.mode === "verify"
-      ? continuation.instruction
-      : `There is URL-backed evidence that refines the session for: ${continuation.instruction}.`;
-  const claim = createClaim(thread.thread_id, claimText, "follow_up", "high");
-  thread.claim_ids = [claim.claim_id];
-  thread.execution.open_claim_ids = [claim.claim_id];
-  session.threads.push(thread);
-  session.claims.push(claim);
-  continuation.created_thread_ids.push(thread.thread_id);
-  return thread;
+function createContinuationThreadSpec(instruction, mode = "deepen") {
+  const title = String(instruction).slice(0, 72);
+  return {
+    title: `Follow-up: ${title}`,
+    intent: `address the continuation instruction: ${instruction}`,
+    subqueries: [instruction],
+    notes: "Created from a continuation instruction.",
+    claims: [
+      {
+        text:
+          mode === "verify"
+            ? instruction
+            : `There is URL-backed evidence that refines the session for: ${instruction}.`,
+        claim_type: "follow_up",
+        priority: "high",
+      },
+    ],
+  };
 }
 
 export function applyContinuationInstruction(session, instruction, domains = []) {
@@ -861,85 +1184,70 @@ export function applyContinuationInstruction(session, instruction, domains = [])
   if (!trimmed) {
     return null;
   }
+  ensureNotAwaitingPlanApproval(session);
+  const mode = inferContinuationMode(trimmed);
+  const operations = [
+    {
+      type: "add_gap",
+      gap: trimmed,
+      reason: "Continuation kept this angle explicitly open in the ledger.",
+    },
+  ];
+  if (domains.length > 0) {
+    operations.push({
+      type: "merge_domains",
+      domains,
+      reason: "Continuation introduced or reinforced domain constraints.",
+    });
+  }
 
-  const continuation = {
-    continuation_id: createId("continuation"),
-    instruction: trimmed,
-    mode: inferContinuationMode(trimmed),
-    created_at: new Date().toISOString(),
-    applied_at: new Date().toISOString(),
-    domains,
-    affected_thread_ids: [],
-    created_thread_ids: [],
-    stale_claim_ids: [],
-    notes: [],
-  };
-  session.continuations.push(continuation);
-
-  session.stop_status.remaining_gaps = mergeUniqueStrings(session.stop_status.remaining_gaps, [
-    trimmed,
-  ]);
-  session.planning_artifacts.continuation_notes = mergeUniqueStrings(
-    session.planning_artifacts.continuation_notes,
-    [trimmed],
-  );
-
-  if (continuation.mode === "verify") {
+  if (mode === "verify") {
     const matchedClaims = matchingClaims(session, trimmed).slice(0, 3);
     if (matchedClaims.length > 0) {
       for (const claim of matchedClaims) {
-        claim.verification.stale = true;
-        claim.verification.status = "queued";
-        claim.verification.last_continuation_id = continuation.continuation_id;
-        continuation.stale_claim_ids.push(claim.claim_id);
-        queueWorkItem(session, {
-          kind: "verify_claim",
-          scopeType: "claim",
-          scopeId: claim.claim_id,
-          continuationId: continuation.continuation_id,
+        operations.push({
+          type: "mark_claim_stale",
+          claim_id: claim.claim_id,
           reason: `Continuation requested verification for claim: ${claim.text}`,
         });
       }
     } else {
-      const thread = createContinuationThread(session, continuation);
-      queueWorkItem(session, {
-        kind: "gather_thread",
-        scopeType: "thread",
-        scopeId: thread.thread_id,
-        continuationId: continuation.continuation_id,
-        keySuffix: "round-1",
-        reason: `Continuation created a new focused verification thread.`,
+      operations.push({
+        type: "add_thread",
+        thread: createContinuationThreadSpec(trimmed, mode),
+        reason: "Continuation created a new focused verification thread.",
       });
     }
   } else {
-    const matchedThreads =
-      continuation.mode === "branch" ? [] : matchingThreads(session, trimmed).slice(0, 2);
-    const targets =
-      matchedThreads.length > 0
-        ? matchedThreads
-        : [createContinuationThread(session, continuation)];
-    for (const thread of targets) {
-      const targetThread = getThreadById(session, thread.thread_id) ?? thread;
-      targetThread.execution.gather_status = "queued";
-      targetThread.execution.last_continuation_id = continuation.continuation_id;
-      continuation.affected_thread_ids.push(targetThread.thread_id);
-      queueWorkItem(session, {
-        kind: "gather_thread",
-        scopeType: "thread",
-        scopeId: targetThread.thread_id,
-        continuationId: continuation.continuation_id,
-        keySuffix: `round-${targetThread.execution.gather_rounds + 1}`,
-        reason: `Continuation requested deeper gathering for thread: ${targetThread.title}`,
+    const matchedThreads = mode === "branch" ? [] : matchingThreads(session, trimmed).slice(0, 2);
+    if (matchedThreads.length > 0) {
+      for (const thread of matchedThreads) {
+        operations.push({
+          type: "requeue_thread",
+          thread_id: thread.thread_id,
+          reason: `Continuation requested deeper gathering for thread: ${thread.title}`,
+        });
+      }
+    } else {
+      operations.push({
+        type: "add_thread",
+        thread: createContinuationThreadSpec(trimmed, mode),
+        reason:
+          mode === "branch"
+            ? "Continuation branched into a new thread."
+            : "Continuation created a new follow-up thread.",
       });
     }
   }
 
-  appendDecision(session, "instruction", `Applied continuation instruction: ${trimmed}`, {
-    continuation_id: continuation.continuation_id,
-    mode: continuation.mode,
-    affected_thread_ids: continuation.affected_thread_ids,
-    created_thread_ids: continuation.created_thread_ids,
-    stale_claim_ids: continuation.stale_claim_ids,
-  });
-  return continuation;
+  return applyContinuationPatch(
+    session,
+    {
+      instruction: trimmed,
+      mode,
+      domains,
+      operations,
+    },
+    { action: "instruction" },
+  );
 }

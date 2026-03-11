@@ -36,6 +36,49 @@ function sentenceSplit(text) {
     .filter(Boolean);
 }
 
+function truncateAnchor(text, maxLength = 220) {
+  const value = String(text).replace(/\s+/gu, " ").trim();
+  if (!value) {
+    return "";
+  }
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3).trim()}...` : value;
+}
+
+function buildAttribution({
+  sentence = "",
+  sentenceIndex = null,
+  matchedTokens = [],
+  excerptMethod = "sentence_match",
+  attributionConfidence = null,
+}) {
+  return {
+    anchor_text: truncateAnchor(sentence),
+    matched_sentence: sentence ? String(sentence).trim() : "",
+    matched_sentence_index: Number.isFinite(sentenceIndex) ? sentenceIndex : null,
+    matched_tokens: matchedTokens,
+    excerpt_method: excerptMethod,
+    attribution_confidence:
+      typeof attributionConfidence === "number"
+        ? Number(Math.max(0, Math.min(1, attributionConfidence)).toFixed(2))
+        : null,
+  };
+}
+
+function attributionConfidenceForMatch({
+  score,
+  stance,
+  hasConcreteDetail = false,
+  tokenCount = 0,
+}) {
+  if (score <= 0) {
+    return 0.2;
+  }
+  const base = 0.3 + Math.min(0.35, score * 0.12) + Math.min(0.15, tokenCount * 0.03);
+  const stanceBonus = stance === "context" ? 0 : 0.15;
+  const detailBonus = hasConcreteDetail ? 0.1 : 0;
+  return base + stanceBonus + detailBonus;
+}
+
 function domainFromUrl(url) {
   try {
     return new URL(url).hostname.replace(/^www\./u, "");
@@ -154,20 +197,29 @@ function claimTokens(claimText) {
 export function inferClaimMatch(claim, snippet, query) {
   const tokens = claimTokens(claim.text);
   const sentences = sentenceSplit(snippet);
-  const evaluated = (sentences.length > 0 ? sentences : [String(snippet)]).map((sentence) => {
+  const evaluated = (sentences.length > 0 ? sentences : [String(snippet)]).map((sentence, index) => {
     const lowered = sentence.toLowerCase();
     const matched = tokens.filter((token) => lowered.includes(token));
     return {
       sentence,
+      sentenceIndex: sentences.length > 0 ? index : null,
       matched,
       score: matched.length,
     };
   });
   const best = evaluated.sort((left, right) => right.score - left.score)[0];
   if (!best || best.score === 0) {
+    const fallbackSentence = sentences[0] ?? String(snippet).trim();
     return {
       stance: "context",
       whyMatched: `Thread/query context matched claim through "${query}", but no direct claim tokens were found.`,
+      attribution: buildAttribution({
+        sentence: fallbackSentence,
+        sentenceIndex: sentences.length > 0 ? 0 : null,
+        matchedTokens: [],
+        excerptMethod: fallbackSentence ? "fallback_sentence" : "empty_excerpt",
+        attributionConfidence: 0.2,
+      }),
     };
   }
 
@@ -197,12 +249,40 @@ export function inferClaimMatch(claim, snippet, query) {
       return {
         stance: "context",
         whyMatched: `Matched the topic for "${query}", but the sentence did not include the concrete endpoint, API surface, or pricing detail needed to support the claim.`,
+        attribution: buildAttribution({
+          sentence: best.sentence,
+          sentenceIndex: best.sentenceIndex,
+          matchedTokens: best.matched,
+          excerptMethod: "sentence_token_match",
+          attributionConfidence: attributionConfidenceForMatch({
+            score: best.score,
+            stance: "context",
+            tokenCount: tokens.length,
+          }),
+        }),
       };
     }
   }
+
+  const hasConcreteDetail =
+    /\b(\/v\d+(?:\/[a-z0-9._-]+)+)\b/iu.test(best.sentence) ||
+    /\b([A-Z][A-Za-z0-9/-]*(?:\s+[A-Z][A-Za-z0-9/-]*)*\s+API)\b/u.test(best.sentence) ||
+    /\$\d|\bfree\b|\bcontact sales\b|\bper (?:month|seat|user|request)\b/i.test(best.sentence);
   return {
     stance,
     whyMatched: `Matched claim tokens [${best.matched.join(", ")}] in sentence "${best.sentence.slice(0, 180)}" from query "${query}".`,
+    attribution: buildAttribution({
+      sentence: best.sentence,
+      sentenceIndex: best.sentenceIndex,
+      matchedTokens: best.matched,
+      excerptMethod: "sentence_token_match",
+      attributionConfidence: attributionConfidenceForMatch({
+        score: best.score,
+        stance,
+        hasConcreteDetail,
+        tokenCount: tokens.length,
+      }),
+    }),
   };
 }
 
@@ -295,14 +375,76 @@ function mergeCandidateUrls(session, candidates) {
   );
 }
 
+function evidenceIdentity(item) {
+  return `${item.url}|${item.title}|${item.excerpt}|${item.claim_links
+    .map((link) => `${link.claim_id}:${link.stance}`)
+    .join(",")}`;
+}
+
+function attributionScore(attribution = {}) {
+  const confidence =
+    typeof attribution.attribution_confidence === "number"
+      ? attribution.attribution_confidence
+      : -1;
+  const tokenBonus = Array.isArray(attribution.matched_tokens) ? attribution.matched_tokens.length : 0;
+  const sentenceBonus = attribution.matched_sentence ? 1 : 0;
+  const anchorBonus = attribution.anchor_text ? 1 : 0;
+  return confidence * 100 + tokenBonus * 10 + sentenceBonus * 2 + anchorBonus;
+}
+
+function preferAttribution(left = {}, right = {}) {
+  return attributionScore(right) > attributionScore(left) ? right : left;
+}
+
+function mergeClaimLinks(existingLinks = [], incomingLinks = []) {
+  const merged = new Map();
+  for (const link of [...existingLinks, ...incomingLinks]) {
+    const key = `${link.claim_id}:${link.stance}`;
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, link);
+      continue;
+    }
+    merged.set(key, {
+      ...current,
+      ...link,
+      reason: link.reason || current.reason,
+      attribution: preferAttribution(current.attribution, link.attribution),
+    });
+  }
+  return [...merged.values()];
+}
+
+function mergeEvidenceRecord(existing, incoming) {
+  const claimLinks = mergeClaimLinks(existing.claim_links, incoming.claim_links);
+  const primaryLink =
+    claimLinks.find((link) => link.stance !== "context") ?? claimLinks[0] ?? null;
+  return {
+    ...existing,
+    ...incoming,
+    claim_links: claimLinks,
+    attribution: preferAttribution(
+      existing.attribution ?? primaryLink?.attribution ?? {},
+      incoming.attribution ?? primaryLink?.attribution ?? {},
+    ),
+  };
+}
+
+export function mergeEvidenceRecords(existingItems = [], incomingItems = []) {
+  const merged = new Map();
+  for (const item of existingItems) {
+    merged.set(evidenceIdentity(item), item);
+  }
+  for (const item of incomingItems) {
+    const key = evidenceIdentity(item);
+    const existing = merged.get(key);
+    merged.set(key, existing ? mergeEvidenceRecord(existing, item) : item);
+  }
+  return [...merged.values()];
+}
+
 function mergeEvidence(session, evidenceItems) {
-  session.evidence = uniqueBy(
-    [...session.evidence, ...evidenceItems],
-    (item) =>
-      `${item.url}|${item.title}|${item.excerpt}|${item.claim_links
-        .map((link) => `${link.claim_id}:${link.stance}`)
-        .join(",")}`,
-  );
+  session.evidence = mergeEvidenceRecords(session.evidence, evidenceItems);
 }
 
 function claimsForThread(session, threadId) {
@@ -319,6 +461,7 @@ function buildClaimLinks(claims, snippet, query) {
       claim_id: claim.claim_id,
       stance: match.stance,
       reason: match.whyMatched,
+      attribution: match.attribution,
     };
   });
   const directLinks = links.filter((link) => link.stance !== "context");
@@ -337,6 +480,8 @@ function buildEvidenceRecord({
 }) {
   const excerpt = item.raw_content ?? item.content ?? "";
   const sourceType = inferSourceType(item.url ?? "", item.title ?? "", excerpt);
+  const claimLinks = buildClaimLinks(claims, excerpt, query);
+  const primaryLink = claimLinks.find((link) => link.stance !== "context") ?? claimLinks[0] ?? null;
   return {
     evidence_id: createId("evidence"),
     run_id: runId,
@@ -348,7 +493,8 @@ function buildEvidenceRecord({
     quality: inferQuality(sourceType),
     retrieval_score: searchScore,
     published_at: extractDate(item),
-    claim_links: buildClaimLinks(claims, excerpt, query),
+    claim_links: claimLinks,
+    attribution: primaryLink?.attribution ?? buildAttribution({ sentence: excerpt }),
     provenance: {
       query,
       strategy,
