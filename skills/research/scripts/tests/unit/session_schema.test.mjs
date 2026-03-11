@@ -46,6 +46,7 @@ test("createSession seeds the v6 top-level schema", () => {
   assert.ok(session.research_brief);
   assert.ok(Array.isArray(session.plan_versions));
   assert.ok(Array.isArray(session.activity_history));
+  assert.ok(Array.isArray(session.gaps));
 });
 
 test("nextQueuedWorkItem respects explicit work item dependencies", () => {

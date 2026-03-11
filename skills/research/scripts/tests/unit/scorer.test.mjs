@@ -106,3 +106,44 @@ test("rejected high-priority claims can still satisfy stop criteria", async () =
   assert.equal(session.stop_status.decision, "stop");
   assert.ok(session.work_items.some((item) => item.kind === "synthesize_session"));
 });
+
+test("open typed blockers keep the session from claiming stop", async () => {
+  const session = createSession({
+    query: "Research vendor positioning",
+    depth: "standard",
+    domains: [],
+  });
+  await planSession(session, createTestRuntime(session, createFixtureAdapters()));
+  const highClaims = session.claims.filter((claim) => claim.priority === "high");
+  for (const claim of highClaims) {
+    claim.status = "supported";
+    claim.evidence_ids = [`e-${claim.claim_id}`];
+    claim.verification.status = "completed";
+    claim.assessment = {
+      ...claim.assessment,
+      verdict: "supported",
+      sufficiency: "sufficient",
+      resolution_state: "resolved",
+    };
+  }
+  session.evidence = highClaims.map((claim, index) => linkedEvidence(claim, index, "support"));
+  session.gaps.push({
+    gap_id: "gap-1",
+    kind: "evidence_gap",
+    summary: "Need stronger enterprise proof points.",
+    scope_type: "session",
+    scope_id: session.session_id,
+    severity: "high",
+    status: "open",
+    recommended_next_action: "Ask the agent to decide whether to deepen or stop with caveats.",
+    created_by: "agent",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  scoreSession(session);
+  updateStopStatus(session);
+
+  assert.equal(session.stop_status.decision, "continue");
+  assert.ok(session.stop_status.remaining_gaps.includes("Need stronger enterprise proof points."));
+});

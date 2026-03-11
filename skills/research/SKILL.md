@@ -26,7 +26,9 @@ Common commands:
 
 ```bash
 node "$SCRIPT" start --query "Research the AI coding agent landscape in 2026"
+node "$SCRIPT" prepare --query "Research the AI coding agent landscape in 2026"
 node "$SCRIPT" status --session-id <session_id>
+node "$SCRIPT" approve --session-id <session_id>
 node "$SCRIPT" continue --session-id <session_id> --instruction "Dig deeper on pricing"
 node "$SCRIPT" start --query "Does product X support SSO?" --plan-file /path/to/plan.json
 node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/followup-plan.json
@@ -43,6 +45,9 @@ Useful flags:
 - `--domains domain1,domain2`
 - `--plan-file /path/to/plan.json`
 - `--format md|json` for `report`
+
+Use `prepare` when the agent wants a reviewable plan snapshot before automatic gathering starts.
+Use `approve` when a prepared plan should resume normal orchestration.
 
 ## Default Loop
 
@@ -88,6 +93,24 @@ Minimal plan shape:
       ]
     }
   ]
+}
+```
+
+You can also include a lightweight `research_brief` so the agent owns more of the soft judgment:
+
+```json
+{
+  "research_brief": {
+    "objective": "Compare leading AI coding agents for enterprise adoption",
+    "deliverable": "report",
+    "source_policy": {
+      "mode": "allowlist",
+      "allow_domains": ["openai.com", "anthropic.com"],
+      "preferred_domains": ["developers.openai.com"],
+      "notes": ["Prefer official pricing and security pages."]
+    },
+    "clarification_notes": ["Optimize for enterprise buyers, not hobbyists."]
+  }
 }
 ```
 
@@ -161,6 +184,26 @@ Supported operations in this first slice:
 - `note`
 - `add_thread`
 
+When the blocker state matters, prefer a typed gap instead of only a free-text string:
+
+```json
+{
+  "type": "add_gap",
+  "gap": {
+    "kind": "source_authority",
+    "summary": "Need a primary source tie-breaker for pricing visibility.",
+    "scope_type": "thread",
+    "scope_id": "thread-123",
+    "severity": "high",
+    "recommended_next_action": "Check official pricing and enterprise packaging pages.",
+    "status": "open"
+  }
+}
+```
+
+The runtime persists typed gaps in `gaps[]`. Keep `remaining_gaps` as a backward-compatible text view,
+not the primary blocker model.
+
 ## Evidence Rules
 
 - Treat Tavily Research as planning help, not evidence.
@@ -180,6 +223,7 @@ The session ledger now also persists a lightweight control plane:
 - `plan_state`
 - `plan_versions`
 - `activity_history`
+- `gaps`
 
 ## Routing
 

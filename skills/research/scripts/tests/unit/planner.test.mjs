@@ -78,6 +78,15 @@ test("applyResearchPlan lets the agent seed threads and claims directly", () => 
     planning_artifacts: {
       comparison_axes: ["workflow", "deployment", "pricing"],
     },
+    gaps: [
+      {
+        kind: "source_authority",
+        summary: "Need primary sources for deployment claims.",
+        scope_type: "thread",
+        severity: "high",
+        recommended_next_action: "Check official deployment docs.",
+      },
+    ],
     remaining_gaps: ["Need primary sources for deployment claims."],
     threads: [
       {
@@ -107,6 +116,47 @@ test("applyResearchPlan lets the agent seed threads and claims directly", () => 
   ]);
   assert.ok(
     session.stop_status.remaining_gaps.includes("Need primary sources for deployment claims."),
+  );
+  assert.ok(session.gaps.some((gap) => gap.summary === "Need primary sources for deployment claims."));
+});
+
+test("applyResearchPlan carries research_brief and source_policy into the session", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    research_brief: {
+      objective: "Compare AI coding agents for enterprise adoption",
+      deliverable: "report",
+      source_policy: {
+        mode: "allowlist",
+        allow_domains: ["openai.com", "anthropic.com"],
+        preferred_domains: ["developers.openai.com"],
+        notes: ["Prefer official pricing and security pages."],
+      },
+      clarification_notes: ["Optimize for enterprise buyers, not hobbyists."],
+    },
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  assert.equal(session.research_brief.objective, "Compare AI coding agents for enterprise adoption");
+  assert.equal(session.research_brief.deliverable, "report");
+  assert.ok(session.research_brief.source_policy.allow_domains.includes("openai.com"));
+  assert.ok(session.research_brief.source_policy.preferred_domains.includes("developers.openai.com"));
+  assert.ok(
+    session.research_brief.clarification_notes.includes(
+      "Optimize for enterprise buyers, not hobbyists.",
+    ),
   );
 });
 
@@ -203,7 +253,14 @@ test("applyResearchPlan can apply a structured continuation patch", () => {
           },
           {
             type: "add_gap",
-            gap: "Need fresher deployment evidence.",
+            gap: {
+              kind: "freshness",
+              summary: "Need fresher deployment evidence.",
+              scope_type: "thread",
+              scope_id: existingThread.thread_id,
+              severity: "medium",
+              recommended_next_action: "Check changelog or release notes.",
+            },
           },
           {
             type: "note",
@@ -244,6 +301,13 @@ test("applyResearchPlan can apply a structured continuation patch", () => {
   );
   assert.ok(session.threads.some((thread) => thread.title === "Deployment"));
   assert.ok(session.stop_status.remaining_gaps.includes("Need fresher deployment evidence."));
+  assert.ok(
+    session.gaps.some(
+      (gap) =>
+        gap.summary === "Need fresher deployment evidence." &&
+        gap.recommended_next_action === "Check changelog or release notes.",
+    ),
+  );
   assert.ok(session.continuations.at(-1)?.operations.length >= 5);
 });
 
@@ -280,4 +344,73 @@ test("explicit continuation gaps survive scoring updates", () => {
   updateStopStatus(session);
 
   assert.ok(session.stop_status.remaining_gaps.includes("Need stronger enterprise proof points."));
+});
+
+test("resolved typed gaps drop out of the compatible text view", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    gaps: [
+      {
+        kind: "source_authority",
+        summary: "Need stronger enterprise proof points.",
+        severity: "high",
+        status: "open",
+      },
+    ],
+    threads: [
+      {
+        title: "Enterprise rollout",
+        intent: "inspect rollout proof points",
+        claims: [{ text: "Enterprise rollout patterns differ.", priority: "high" }],
+      },
+    ],
+  });
+
+  const gap = session.gaps.find((item) => item.summary === "Need stronger enterprise proof points.");
+  gap.status = "resolved";
+  scoreSession(session);
+  updateStopStatus(session);
+
+  assert.ok(!session.stop_status.remaining_gaps.includes("Need stronger enterprise proof points."));
+});
+
+test("pending plan snapshots carry typed gaps", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    gaps: [
+      {
+        kind: "source_authority",
+        summary: "Need stronger enterprise proof points.",
+        severity: "high",
+        recommended_next_action: "Check official enterprise case studies.",
+      },
+    ],
+    threads: [
+      {
+        title: "Enterprise rollout",
+        intent: "inspect rollout proof points",
+        claims: [{ text: "Enterprise rollout patterns differ.", priority: "high" }],
+      },
+    ],
+  });
+
+  assert.equal(session.plan_versions.length, 1);
+  assert.equal(session.plan_versions[0].gaps[0]?.summary, "Need stronger enterprise proof points.");
+  assert.equal(
+    session.plan_versions[0].gaps[0]?.recommended_next_action,
+    "Check official enterprise case studies.",
+  );
 });

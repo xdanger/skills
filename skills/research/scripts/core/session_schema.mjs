@@ -151,6 +151,25 @@ function createPlanState(value = {}) {
   };
 }
 
+function createGap(value = {}) {
+  const now = isoNow();
+  const summary = String(value.summary ?? value.gap ?? value.text ?? "").trim();
+  return {
+    gap_id: value.gap_id ?? createId("gap"),
+    kind: value.kind ?? "evidence_gap",
+    summary,
+    scope_type: value.scope_type ?? value.scopeType ?? null,
+    scope_id: value.scope_id ?? value.scopeId ?? null,
+    severity: value.severity ?? "medium",
+    status: value.status ?? "open",
+    recommended_next_action:
+      value.recommended_next_action ?? value.recommendedNextAction ?? "",
+    created_by: value.created_by ?? value.createdBy ?? "agent",
+    created_at: value.created_at ?? now,
+    updated_at: value.updated_at ?? now,
+  };
+}
+
 function summarizePlanThread(thread = {}) {
   return {
     thread_id: thread.thread_id ?? null,
@@ -158,6 +177,20 @@ function summarizePlanThread(thread = {}) {
     intent: thread.intent ?? "",
     subqueries: ensureArray(thread.subqueries),
     claim_ids: ensureArray(thread.claim_ids),
+  };
+}
+
+function summarizePlanGap(gap = {}) {
+  return {
+    gap_id: gap.gap_id ?? null,
+    kind: gap.kind ?? "evidence_gap",
+    summary: gap.summary ?? "",
+    scope_type: gap.scope_type ?? null,
+    scope_id: gap.scope_id ?? null,
+    severity: gap.severity ?? "medium",
+    status: gap.status ?? "open",
+    recommended_next_action: gap.recommended_next_action ?? "",
+    created_by: gap.created_by ?? "agent",
   };
 }
 
@@ -185,6 +218,8 @@ function normalizePlanVersion(value = {}) {
     summary: value.summary ?? "",
     threads: ensureArray(value.threads).map((thread) => summarizePlanThread(thread)),
     claims: ensureArray(value.claims).map((claim) => summarizePlanClaim(claim)),
+    gaps: ensureArray(value.gaps).map((gap) => summarizePlanGap(gap)),
+    research_brief: createResearchBrief(value.research_brief ?? {}, value.goal ?? "", []),
     remaining_gaps: ensureArray(value.remaining_gaps),
     created_at: createdAt,
     approved_at:
@@ -201,6 +236,15 @@ function normalizeActivityEntry(value = {}) {
     metadata: value.metadata ?? {},
     created_at: value.created_at ?? isoNow(),
   };
+}
+
+function gapIdentity(gap = {}) {
+  return [
+    gap.kind ?? "evidence_gap",
+    gap.scope_type ?? "",
+    gap.scope_id ?? "",
+    gap.summary ?? "",
+  ].join("|");
 }
 
 function createScores(value = {}) {
@@ -628,6 +672,36 @@ export function appendActivity(session, type, summary, metadata = {}, stage = se
   return entry;
 }
 
+export function activeGaps(session) {
+  return ensureArray(session.gaps).filter(
+    (gap) =>
+      gap.status !== "resolved" &&
+      gap.status !== "closed" &&
+      gap.status !== "tracking",
+  );
+}
+
+export function upsertGap(session, gapInput = {}) {
+  const normalized = createGap(gapInput);
+  if (!normalized.summary) {
+    fail("Gap entries require a non-empty `summary`.");
+  }
+  const existing = ensureArray(session.gaps).find(
+    (gap) => gapIdentity(gap) === gapIdentity(normalized),
+  );
+  if (!existing) {
+    session.gaps.push(normalized);
+    return normalized;
+  }
+  existing.severity = normalized.severity || existing.severity;
+  existing.status = normalized.status || existing.status;
+  existing.recommended_next_action =
+    normalized.recommended_next_action || existing.recommended_next_action;
+  existing.created_by = existing.created_by || normalized.created_by;
+  existing.updated_at = isoNow();
+  return existing;
+}
+
 export function syncResearchBrief(session) {
   const objective = session.goal || session.user_query || session.research_brief?.objective || "";
   session.research_brief = createResearchBrief(
@@ -652,6 +726,8 @@ export function recordPlanVersion(
     summary = "",
     threads = [],
     claims = [],
+    gaps = [],
+    researchBrief = session.research_brief,
     remainingGaps = [],
   } = {},
 ) {
@@ -675,6 +751,8 @@ export function recordPlanVersion(
     task_shape: session.task_shape,
     threads,
     claims,
+    gaps,
+    research_brief: researchBrief,
     remaining_gaps: remainingGaps,
   });
   session.plan_versions.push(version);
@@ -1059,6 +1137,7 @@ function normalizeLedgerFields(session) {
   session.activity_history = ensureArray(session.activity_history).map((item) =>
     normalizeActivityEntry(item),
   );
+  session.gaps = ensureArray(session.gaps).map((item) => createGap(item));
   session.planning_artifacts = createPlanningArtifacts(session.planning_artifacts);
   session.candidate_urls = ensureArray(session.candidate_urls).map((item) =>
     normalizeCandidateUrl(item),
@@ -1208,6 +1287,7 @@ export function createSession({ query, depth, domains, approvalMode = "approved"
     }),
     plan_versions: [],
     activity_history: [],
+    gaps: [],
     constraints: {
       depth,
       domains,
@@ -1269,6 +1349,7 @@ export function upgradeSession(rawSession) {
     plan_state: rawSession.plan_state,
     plan_versions: rawSession.plan_versions,
     activity_history: rawSession.activity_history,
+    gaps: rawSession.gaps,
     constraints: {
       depth: rawSession.constraints?.depth ?? rawSession.depth ?? DEFAULT_DEPTH,
       domains: ensureArray(rawSession.constraints?.domains ?? rawSession.domains),

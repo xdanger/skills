@@ -29,6 +29,43 @@ function citationsForEvidence(evidence) {
   }));
 }
 
+function summarizedPlanVersion(version) {
+  if (!version) {
+    return null;
+  }
+  return {
+    plan_version_id: version.plan_version_id,
+    plan_id: version.plan_id,
+    source: version.source,
+    status: version.status,
+    summary: version.summary,
+    task_shape: version.task_shape,
+    research_brief: version.research_brief ?? null,
+    thread_count: Array.isArray(version.threads) ? version.threads.length : 0,
+    claim_count: Array.isArray(version.claims) ? version.claims.length : 0,
+    gaps: Array.isArray(version.gaps) ? version.gaps : [],
+    remaining_gaps: Array.isArray(version.remaining_gaps) ? version.remaining_gaps : [],
+    created_at: version.created_at,
+    approved_at: version.approved_at,
+  };
+}
+
+function currentPlanSummary(session) {
+  return summarizedPlanVersion(
+    session.plan_versions.find(
+      (item) => item.plan_version_id === session.plan_state?.current_plan_version_id,
+    ) ?? null,
+  );
+}
+
+function pendingPlanSummary(session) {
+  return summarizedPlanVersion(
+    session.plan_versions.find(
+      (item) => item.plan_version_id === session.plan_state?.pending_plan_version_id,
+    ) ?? null,
+  );
+}
+
 function observationsForThread(session, threadId) {
   return session.observations.filter((item) => item.thread_id === threadId);
 }
@@ -337,6 +374,9 @@ export function synthesizeAnswer(session) {
 
 export function summarizeSession(session) {
   const activeWorkItem = nextQueuedWorkItem(session);
+  const openGaps = Array.isArray(session.gaps)
+    ? session.gaps.filter((gap) => gap.status !== "resolved" && gap.status !== "closed")
+    : [];
   return {
     session_id: session.session_id,
     session_version: session.session_version,
@@ -344,8 +384,13 @@ export function summarizeSession(session) {
     stage: session.stage,
     task_shape: session.task_shape,
     goal: session.goal,
+    research_brief: session.research_brief,
+    plan_state: session.plan_state,
+    current_plan: currentPlanSummary(session),
+    pending_plan: pendingPlanSummary(session),
     scores: session.scores,
     stop_status: session.stop_status,
+    open_gaps: openGaps,
     active_work_item: activeWorkItem
       ? {
           kind: activeWorkItem.kind,
@@ -366,6 +411,7 @@ export function summarizeSession(session) {
     unresolved_contradictions: session.contradictions
       .filter((item) => item.status === "open")
       .map((item) => item.summary),
+    recent_activity: session.activity_history.slice(-5),
     updated_at: session.updated_at,
   };
 }
@@ -373,6 +419,18 @@ export function summarizeSession(session) {
 export function summarizeReport(session) {
   const answerSummary =
     session.final_answer.answer_summary || "No final synthesis available yet.";
+  const currentPlan = currentPlanSummary(session);
+  const pendingPlan = pendingPlanSummary(session);
+  const blockerLines =
+    Array.isArray(session.gaps) && session.gaps.length > 0
+      ? session.gaps
+          .filter((gap) => gap.status !== "resolved" && gap.status !== "closed")
+          .map(
+            (gap) =>
+              `- [${gap.severity}] ${gap.summary}${gap.recommended_next_action ? ` (${gap.recommended_next_action})` : ""}`,
+          )
+          .join("\n")
+      : "- No structured blockers recorded.";
   const planLines =
     session.threads.length > 0
       ? session.threads.map((thread) => `- ${thread.title}: ${thread.intent}`).join("\n")
@@ -404,6 +462,15 @@ export function summarizeReport(session) {
 
   return [
     "# Research Plan",
+    "",
+    `Approval status: ${session.plan_state?.approval_status ?? "approved"}`,
+    `Review required: ${session.plan_state?.review_required ? "yes" : "no"}`,
+    currentPlan ? `Current plan: ${currentPlan.summary || currentPlan.plan_version_id}` : "Current plan: none",
+    pendingPlan ? `Pending plan: ${pendingPlan.summary || pendingPlan.plan_version_id}` : "Pending plan: none",
+    "",
+    "# Blockers",
+    "",
+    blockerLines,
     "",
     planLines,
     "",

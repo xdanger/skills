@@ -1,4 +1,5 @@
 import {
+  activeGaps,
   appendDecision,
   getHighPriorityClaims,
   getThreadById,
@@ -36,6 +37,15 @@ function hasQueuedWork(session, kind, scopeId) {
       item.scope_id === scopeId &&
       (item.status === "queued" || item.status === "in_progress"),
   );
+}
+
+function compatibleRemainingGaps(session, openGaps, openClaims) {
+  const activeGapSummaries = new Set(openGaps.map((gap) => gap.summary));
+  const legacyTextOnlyGaps = session.stop_status.remaining_gaps.filter(
+    (summary) =>
+      !session.gaps.some((gap) => gap.summary === summary) || activeGapSummaries.has(summary),
+  );
+  return [...new Set([...legacyTextOnlyGaps, ...openGaps.map((gap) => gap.summary), ...openClaims])];
 }
 
 function claimIsExhausted(session, claim) {
@@ -158,14 +168,16 @@ export function updateStopStatus(session) {
 
   const highClaims = getHighPriorityClaims(session);
   const openClaims = highClaims.filter((claim) => claimIsOpen(claim));
+  const openGaps = activeGaps(session);
   const allOpenClaimsExhausted =
     openClaims.length > 0 && openClaims.every((claim) => claimIsExhausted(session, claim));
 
   const decision =
     (openClaims.length === 0 &&
+      openGaps.length === 0 &&
       session.scores.primary_source_score >= 0.5 &&
       session.scores.contradiction_penalty === 0) ||
-    allOpenClaimsExhausted
+    (allOpenClaimsExhausted && openGaps.length === 0)
       ? "stop"
       : "continue";
 
@@ -176,11 +188,15 @@ export function updateStopStatus(session) {
         ? allOpenClaimsExhausted
           ? "Automatic retrieval reached the depth budget, so the session will return a partial synthesis with explicit gaps."
           : "High-priority claims are sufficiently supported with acceptable primary-source coverage."
-        : "Important claims remain unresolved, tentative, contradictory, stale, or under-evidenced.",
+        : openGaps.length > 0
+          ? "Important blockers remain open, so the session should not claim closure yet."
+          : "Important claims remain unresolved, tentative, contradictory, stale, or under-evidenced.",
     open_claim_ids: openClaims.map((claim) => claim.claim_id),
-    remaining_gaps: [
-      ...new Set([...session.stop_status.remaining_gaps, ...openClaims.map((claim) => claim.text)]),
-    ],
+    remaining_gaps: compatibleRemainingGaps(
+      session,
+      openGaps,
+      openClaims.map((claim) => claim.text),
+    ),
   };
   return session.stop_status;
 }

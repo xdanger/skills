@@ -8,6 +8,7 @@ import {
   queueWorkItem,
   recordPlanVersion,
   syncSessionStage,
+  upsertGap,
   uniqueBy,
 } from "./session_schema.mjs";
 import { classifyTaskShape, normalizeGoal } from "./router.mjs";
@@ -154,6 +155,87 @@ function createThreadFromSpec(spec = {}) {
   );
 }
 
+function compileResearchBrief(rawPlan = {}) {
+  const rawBrief =
+    rawPlan.research_brief && typeof rawPlan.research_brief === "object"
+      ? rawPlan.research_brief
+      : {};
+  const rawSourcePolicy =
+    rawBrief.source_policy && typeof rawBrief.source_policy === "object"
+      ? rawBrief.source_policy
+      : rawPlan.source_policy && typeof rawPlan.source_policy === "object"
+        ? rawPlan.source_policy
+        : null;
+  return {
+    objective: String(rawBrief.objective ?? rawPlan.goal ?? "").trim(),
+    deliverable: String(rawBrief.deliverable ?? "").trim(),
+    source_policy: rawSourcePolicy
+      ? {
+          mode: typeof rawSourcePolicy.mode === "string" ? rawSourcePolicy.mode.trim() : "",
+          allow_domains: mergeUniqueStrings(
+            [],
+            ensureArray(rawSourcePolicy.allow_domains ?? rawSourcePolicy.domains)
+              .map((item) => String(item).trim())
+              .filter(Boolean),
+          ),
+          preferred_domains: mergeUniqueStrings(
+            [],
+            ensureArray(rawSourcePolicy.preferred_domains)
+              .map((item) => String(item).trim())
+              .filter(Boolean),
+          ),
+          notes: ensureArray(rawSourcePolicy.notes)
+            .map((item) => String(item).trim())
+            .filter(Boolean),
+        }
+      : null,
+    clarification_notes: ensureArray(rawBrief.clarification_notes)
+      .map((item) => String(item).trim())
+      .filter(Boolean),
+  };
+}
+
+function compileGapSpec(rawGap = {}, fallbackSummary = "") {
+  const summary =
+    typeof rawGap === "string"
+      ? rawGap.trim()
+      : String(rawGap.summary ?? rawGap.gap ?? rawGap.text ?? fallbackSummary).trim();
+  if (!summary) {
+    fail("Gap entries require a non-empty `summary`.");
+  }
+  return {
+    kind:
+      typeof rawGap === "object" && !Array.isArray(rawGap) && rawGap.kind
+        ? String(rawGap.kind).trim()
+        : "evidence_gap",
+    summary,
+    scope_type:
+      typeof rawGap === "object" && !Array.isArray(rawGap)
+        ? rawGap.scope_type ?? rawGap.scopeType ?? null
+        : null,
+    scope_id:
+      typeof rawGap === "object" && !Array.isArray(rawGap)
+        ? rawGap.scope_id ?? rawGap.scopeId ?? null
+        : null,
+    severity:
+      typeof rawGap === "object" && !Array.isArray(rawGap) && rawGap.severity
+        ? String(rawGap.severity).trim()
+        : "medium",
+    status:
+      typeof rawGap === "object" && !Array.isArray(rawGap) && rawGap.status
+        ? String(rawGap.status).trim()
+        : "open",
+    recommended_next_action:
+      typeof rawGap === "object" && !Array.isArray(rawGap)
+        ? String(rawGap.recommended_next_action ?? rawGap.recommendedNextAction ?? "").trim()
+        : "",
+    created_by:
+      typeof rawGap === "object" && !Array.isArray(rawGap)
+        ? String(rawGap.created_by ?? rawGap.createdBy ?? "agent").trim()
+        : "agent",
+  };
+}
+
 function compileAgentPlan(rawPlan = {}) {
   if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
     fail("Agent-authored plan must be a JSON object.");
@@ -194,6 +276,16 @@ function compileAgentPlan(rawPlan = {}) {
     remainingGaps: Array.isArray(rawPlan.remaining_gaps)
       ? rawPlan.remaining_gaps.map((item) => String(item).trim()).filter(Boolean)
       : [],
+    gaps: [
+      ...ensureArray(rawPlan.gaps).map((item) => compileGapSpec(item)),
+      ...ensureArray(rawPlan.remaining_gaps).map((item) =>
+        compileGapSpec(
+          typeof item === "string"
+            ? { summary: item, status: "tracking", created_by: "compat" }
+            : { ...item, status: item.status ?? "tracking", created_by: item.created_by ?? "compat" },
+        ),
+      ),
+    ],
     planningArtifacts: {
       hypotheses: Array.isArray(artifacts.hypotheses)
         ? artifacts.hypotheses.map((item) => String(item).trim()).filter(Boolean)
@@ -209,6 +301,7 @@ function compileAgentPlan(rawPlan = {}) {
         : [],
     },
     constraints: rawPlan.constraints ?? {},
+    researchBrief: compileResearchBrief(rawPlan),
     summary: String(rawPlan.summary ?? rawPlan.notes ?? "").trim(),
   };
 }
@@ -612,6 +705,50 @@ function requiresPlanApproval(session) {
   return session.plan_state?.approval_status === "pending";
 }
 
+function mergeResearchBrief(session, researchBrief = {}) {
+  if (!session.research_brief) {
+    return;
+  }
+  if (researchBrief.objective) {
+    session.research_brief.objective = normalizeGoal(researchBrief.objective);
+  } else if (!session.research_brief.objective && session.goal) {
+    session.research_brief.objective = session.goal;
+  }
+  if (researchBrief.deliverable) {
+    session.research_brief.deliverable = researchBrief.deliverable;
+  }
+  if (researchBrief.source_policy) {
+    const existing = session.research_brief.source_policy ?? {
+      mode: "open",
+      allow_domains: [],
+      preferred_domains: [],
+      notes: [],
+    };
+    const allowDomains = mergeUniqueStrings(
+      existing.allow_domains,
+      researchBrief.source_policy.allow_domains,
+    );
+    session.research_brief.source_policy = {
+      ...existing,
+      ...researchBrief.source_policy,
+      allow_domains: allowDomains,
+      preferred_domains: mergeUniqueStrings(
+        existing.preferred_domains,
+        researchBrief.source_policy.preferred_domains,
+      ),
+      notes: mergeUniqueStrings(existing.notes, researchBrief.source_policy.notes),
+      mode:
+        researchBrief.source_policy.mode ||
+        (allowDomains.length > 0 ? "allowlist" : existing.mode ?? "open"),
+    };
+  }
+  session.research_brief.clarification_notes = mergeUniqueStrings(
+    session.research_brief.clarification_notes,
+    researchBrief.clarification_notes,
+  );
+  session.research_brief.updated_at = new Date().toISOString();
+}
+
 function ensureNotAwaitingPlanApproval(session) {
   if (requiresPlanApproval(session) && session.plan_state?.pending_plan_version_id) {
     fail("This session has a pending plan approval. Approve the prepared plan before mutating it.");
@@ -650,8 +787,8 @@ function compileContinuationOperation(operation = {}) {
   }
 
   if (type === "add_gap") {
-    const gap = String(operation.gap ?? operation.text ?? "").trim();
-    if (!gap) {
+    const gap = compileGapSpec(operation.gap ?? operation);
+    if (!gap.summary) {
       fail("Continuation patch operation `add_gap` requires `gap`.");
     }
     return {
@@ -775,12 +912,24 @@ function applyContinuationPatch(
 
     if (operation.type === "merge_domains") {
       session.constraints.domains = mergeUniqueStrings(session.constraints.domains, operation.domains);
+      if (session.research_brief?.source_policy) {
+        session.research_brief.source_policy.allow_domains = mergeUniqueStrings(
+          session.research_brief.source_policy.allow_domains,
+          operation.domains,
+        );
+        session.research_brief.source_policy.mode =
+          session.research_brief.source_policy.allow_domains.length > 0 ? "allowlist" : "open";
+      }
       continue;
     }
 
     if (operation.type === "add_gap") {
+      upsertGap(session, {
+        ...operation.gap,
+        created_by: operation.gap.created_by ?? "agent",
+      });
       session.stop_status.remaining_gaps = mergeUniqueStrings(session.stop_status.remaining_gaps, [
-        operation.gap,
+        operation.gap.summary,
       ]);
       continue;
     }
@@ -905,6 +1054,7 @@ export function applyResearchPlan(
   } else if (!session.goal) {
     session.goal = normalizeGoal(session.user_query);
   }
+  mergeResearchBrief(session, compiled.researchBrief);
 
   if (compiled.task_shape) {
     session.task_shape = compiled.task_shape;
@@ -968,6 +1118,9 @@ export function applyResearchPlan(
     session.stop_status.remaining_gaps,
     compiled.remainingGaps,
   );
+  for (const gap of compiled.gaps) {
+    upsertGap(session, gap);
+  }
   if (session.planning_artifacts.comparison_axes.length === 0 && session.task_shape) {
     session.planning_artifacts.comparison_axes = defaultComparisonAxes(session.task_shape);
   }
@@ -985,6 +1138,8 @@ export function applyResearchPlan(
           : "Prepared an agent-authored research plan for approval."),
       threads: compiled.threads,
       claims: compiled.claims,
+      gaps: compiled.gaps,
+      researchBrief: session.research_brief,
       remainingGaps: compiled.remainingGaps,
     });
     appendDecision(
@@ -1094,6 +1249,9 @@ export async function planSession(session, runtime, workItem = null) {
       session.stop_status.remaining_gaps,
       plan.remainingGaps,
     );
+    for (const gap of plan.remainingGaps) {
+      upsertGap(session, { summary: gap, created_by: "runtime", status: "tracking" });
+    }
     if (session.planning_artifacts.comparison_axes.length === 0) {
       session.planning_artifacts.comparison_axes = defaultComparisonAxes(session.task_shape);
     }
@@ -1107,6 +1265,8 @@ export async function planSession(session, runtime, workItem = null) {
       summary: "Prepared a runtime-generated research plan for approval.",
       threads: session.threads,
       claims: session.claims,
+      gaps: ensureArray(session.gaps),
+      researchBrief: session.research_brief,
       remainingGaps: session.stop_status.remaining_gaps,
     });
     appendDecision(session, "plan_prepare", "Prepared a research plan and paused for approval.", {

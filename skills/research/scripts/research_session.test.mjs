@@ -38,6 +38,10 @@ test("CLI smoke path keeps public commands stable", async () => {
         ["start", "--query", "Is product X SOC 2 certified, and what is the evidence?"],
         createFixtureAdapters(),
       );
+      await main(
+        ["prepare", "--query", "Research AI coding agents for enterprise adoption"],
+        createFixtureAdapters(),
+      );
     });
   });
 });
@@ -138,6 +142,15 @@ test("remote rejoin imports evidence and resumes local work", async () => {
       },
     ],
     remaining_gaps: ["Need a CSV artifact export."],
+    gaps: [
+      {
+        kind: "deliverable_gap",
+        summary: "Need a buyer-ready CSV export.",
+        severity: "high",
+        status: "open",
+        recommended_next_action: "Generate the CSV after validating the vendor list.",
+      },
+    ],
   });
 
   assert.ok(
@@ -154,6 +167,19 @@ test("remote rejoin imports evidence and resumes local work", async () => {
     session.evidence[0].claim_links.some((link) => link.claim_id === targetClaim.claim_id),
   );
   assert.ok(session.observations.length > 0);
+  assert.ok(
+    session.gaps.some(
+      (gap) => gap.summary === "Need a CSV artifact export." && gap.created_by === "remote",
+    ),
+  );
+  assert.ok(
+    session.gaps.some(
+      (gap) =>
+        gap.summary === "Need a buyer-ready CSV export." &&
+        gap.kind === "deliverable_gap" &&
+        gap.created_by === "remote",
+    ),
+  );
 });
 
 test("completed local sessions reopen and resync the next queued stage", () => {
@@ -197,6 +223,25 @@ test("pending approval sessions do not execute queued work", async () => {
   await runOrchestrator(session, createFixtureAdapters(), 6);
 
   assert.ok(session.work_items.some((item) => item.kind === "gather_thread"));
+});
+
+test("approve command resumes a prepared session", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  await withMutedStdout(async () => {
+    await main(["approve", "--session-id", session.session_id], createFixtureAdapters());
+  });
+
+  const updated = loadSession(session.session_id);
+  assert.equal(updated.plan_state.approval_status, "approved");
+  assert.ok(updated.work_items.some((item) => item.kind === "gather_thread"));
 });
 
 test("approved agent-authored pending plans survive resume", async () => {
@@ -380,6 +425,17 @@ test("continue can apply a structured continuation patch file", async () => {
           { type: "mark_claim_stale", claim_id: targetClaim.claim_id },
           { type: "requeue_thread", thread_id: targetThread.thread_id },
           {
+            type: "add_gap",
+            gap: {
+              kind: "source_authority",
+              summary: "Need an official deployment source.",
+              scope_type: "thread",
+              scope_id: targetThread.thread_id,
+              severity: "high",
+              recommended_next_action: "Check official deployment and pricing docs.",
+            },
+          },
+          {
             type: "add_thread",
             thread: {
               title: "Deployment",
@@ -409,5 +465,12 @@ test("continue can apply a structured continuation patch file", async () => {
   const updated = loadSession(session.session_id);
   assert.ok(updated.constraints.domains.includes("docs.example.com"));
   assert.ok(updated.threads.some((thread) => thread.title === "Deployment"));
+  assert.ok(
+    updated.gaps.some(
+      (gap) =>
+        gap.summary === "Need an official deployment source." &&
+        gap.recommended_next_action === "Check official deployment and pricing docs.",
+    ),
+  );
   assert.ok(updated.continuations.at(-1)?.operations.length >= 3);
 });

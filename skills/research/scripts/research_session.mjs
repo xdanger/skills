@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
+  approvePendingPlan,
   assertValidFormat,
   createId,
   createSession,
@@ -12,6 +13,7 @@ import {
   nextQueuedWorkItem,
   queueWorkItem,
   syncSessionStage,
+  upsertGap,
   uniqueBy,
 } from "./core/session_schema.mjs";
 import {
@@ -259,9 +261,29 @@ function applyQueuedRejoinPayload(session, workItem) {
         .map((link) => `${link.claim_id}:${link.stance}`)
         .join(",")}`,
   );
-  session.stop_status.remaining_gaps = Array.isArray(payload.remaining_gaps)
-    ? [...new Set([...session.stop_status.remaining_gaps, ...payload.remaining_gaps])]
-    : session.stop_status.remaining_gaps;
+  const remoteGapSummaries = Array.isArray(payload.remaining_gaps) ? payload.remaining_gaps : [];
+  const remoteTypedGaps = Array.isArray(payload.gaps) ? payload.gaps : [];
+  session.stop_status.remaining_gaps =
+    remoteGapSummaries.length > 0
+      ? [...new Set([...session.stop_status.remaining_gaps, ...remoteGapSummaries])]
+      : session.stop_status.remaining_gaps;
+  if (remoteGapSummaries.length > 0) {
+    for (const gap of remoteGapSummaries) {
+      upsertGap(session, {
+        summary: gap,
+        kind: "remote_gap",
+        created_by: "remote",
+        recommended_next_action: "Review the remote handoff result and decide the next local step.",
+      });
+    }
+  }
+  for (const gap of remoteTypedGaps) {
+    upsertGap(session, {
+      ...gap,
+      kind: gap.kind ?? "remote_gap",
+      created_by: gap.created_by ?? "remote",
+    });
+  }
   session.handoff = {
     ...session.handoff,
     state: "rejoined",
@@ -446,6 +468,21 @@ async function cmdStart(args, adapters) {
   printJson(summarizeSession(session));
 }
 
+async function cmdPrepare(args, adapters) {
+  const session = createSession({
+    query: args.query,
+    depth: args.depth,
+    domains: args.domains,
+    approvalMode: "pending",
+  });
+  if (args.planFile) {
+    const plan = JSON.parse(readFileSync(args.planFile, "utf8"));
+    applyResearchPlan(session, plan, { mode: "replace" });
+  }
+  await runOrchestrator(session, adapters);
+  printJson(summarizeSession(session));
+}
+
 function cmdStatus(args) {
   const session = loadSession(args.sessionId);
   printJson(summarizeSession(session));
@@ -469,6 +506,13 @@ async function cmdContinue(args, adapters) {
     applyResearchPlan(session, plan, { mode: "append" });
   }
   reopenSessionForContinuation(session, instruction || "agent-authored follow-up plan");
+  await runOrchestrator(session, adapters);
+  printJson(summarizeSession(session));
+}
+
+async function cmdApprove(args, adapters) {
+  const session = loadSession(args.sessionId);
+  approvePendingPlan(session);
   await runOrchestrator(session, adapters);
   printJson(summarizeSession(session));
 }
@@ -520,14 +564,14 @@ export async function main(argv = process.argv.slice(2), adapters = createDefaul
   ensureStateDir();
   const args = parseArgs(argv);
   if (
-    ["status", "continue", "report", "sources", "rejoin", "close", "delete"].includes(
+    ["status", "continue", "approve", "report", "sources", "rejoin", "close", "delete"].includes(
       args.command,
     ) &&
     !args.sessionId
   ) {
     fail("--session-id is required");
   }
-  if (args.command === "start" && !args.query) {
+  if (["start", "prepare"].includes(args.command) && !args.query) {
     fail("--query is required");
   }
   if (args.command === "continue" && !args.instruction && !args.planFile) {
@@ -538,11 +582,17 @@ export async function main(argv = process.argv.slice(2), adapters = createDefaul
     case "start":
       await cmdStart(args, adapters);
       break;
+    case "prepare":
+      await cmdPrepare(args, adapters);
+      break;
     case "status":
       cmdStatus(args);
       break;
     case "continue":
       await cmdContinue(args, adapters);
+      break;
+    case "approve":
+      await cmdApprove(args, adapters);
       break;
     case "report":
       cmdReport(args);

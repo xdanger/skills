@@ -17,6 +17,7 @@ Track at least these fields in the session:
 - `plan_state`
 - `plan_versions`
 - `activity_history`
+- `gaps`
 - `goal`
 - `threads`
 - `claims`
@@ -27,6 +28,29 @@ Track at least these fields in the session:
 - `contradictions`
 - `scores`
 - `stop_status`
+
+Treat `research_brief` as an agent-authored judgment surface:
+
+- `objective`
+- `deliverable`
+- `source_policy`
+- `clarification_notes`
+
+Treat `plan_versions` and `activity_history` as review artifacts, not just internal debugging data.
+Treat `gaps[]` as the durable blocker surface. Keep `remaining_gaps` compatible for text outputs, but
+prefer typed gaps for anything another agent may need to update, review, or resolve.
+
+Suggested gap fields:
+
+- `gap_id`
+- `kind`
+- `summary`
+- `scope_type`
+- `scope_id`
+- `severity`
+- `status`
+- `recommended_next_action`
+- `created_by`
 
 ## Source Grading
 
