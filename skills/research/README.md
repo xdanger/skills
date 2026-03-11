@@ -251,4 +251,3 @@ In practice:
 - [SKILL.md](SKILL.md)
 - [method.md](references/method.md)
 - [providers.md](references/providers.md)
-- [refactor-plan.md](references/refactor-plan.md)
