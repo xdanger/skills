@@ -1,6 +1,7 @@
 import {
   activeGaps,
   appendDecision,
+  ensureArray,
   getHighPriorityClaims,
   getThreadById,
   isPrimarySource,
@@ -46,6 +47,15 @@ function compatibleRemainingGaps(session, openGaps, openClaims) {
       !session.gaps.some((gap) => gap.summary === summary) || activeGapSummaries.has(summary),
   );
   return [...new Set([...legacyTextOnlyGaps, ...openGaps.map((gap) => gap.summary), ...openClaims])];
+}
+
+function hasAuthoredControlSurface(session) {
+  const currentPlan = ensureArray(session.plan_versions).find(
+    (item) => item.plan_version_id === session.plan_state?.current_plan_version_id,
+  );
+  return Boolean(
+    ensureArray(session.delta_plans).length > 0 || currentPlan?.source === "agent_authored",
+  );
 }
 
 function claimIsExhausted(session, claim) {
@@ -209,35 +219,37 @@ export function advanceStage(session) {
     return syncSessionStage(session);
   }
 
-  const profile = depthProfile(session.constraints.depth);
-  for (const claim of getHighPriorityClaims(session)) {
-    const thread = getThreadById(session, claim.thread_id);
-    if (!thread) {
-      continue;
-    }
+  if (!hasAuthoredControlSurface(session)) {
+    const profile = depthProfile(session.constraints.depth);
+    for (const claim of getHighPriorityClaims(session)) {
+      const thread = getThreadById(session, claim.thread_id);
+      if (!thread) {
+        continue;
+      }
 
-    if (claimIsOpen(claim) && claim.verification.status !== "queued") {
-      queueWorkItem(session, {
-        kind: "verify_claim",
-        scopeType: "claim",
-        scopeId: claim.claim_id,
-        reason: `Claim ${claim.claim_id} remains unresolved after scoring.`,
-      });
-      claim.verification.status = "queued";
-    }
+      if (claimIsOpen(claim) && claim.verification.status !== "queued") {
+        queueWorkItem(session, {
+          kind: "verify_claim",
+          scopeType: "claim",
+          scopeId: claim.claim_id,
+          reason: `Claim ${claim.claim_id} remains unresolved after scoring.`,
+        });
+        claim.verification.status = "queued";
+      }
 
-    if (
-      claimIsOpen(claim) &&
-      !hasQueuedWork(session, "gather_thread", thread.thread_id) &&
-      thread.execution.gather_rounds < profile.maxGatherRounds
-    ) {
-      queueWorkItem(session, {
-        kind: "gather_thread",
-        scopeType: "thread",
-        scopeId: thread.thread_id,
-        keySuffix: `round-${thread.execution.gather_rounds + 1}`,
-        reason: `Follow-up gather pass for unresolved claim ${claim.claim_id}.`,
-      });
+      if (
+        claimIsOpen(claim) &&
+        !hasQueuedWork(session, "gather_thread", thread.thread_id) &&
+        thread.execution.gather_rounds < profile.maxGatherRounds
+      ) {
+        queueWorkItem(session, {
+          kind: "gather_thread",
+          scopeType: "thread",
+          scopeId: thread.thread_id,
+          keySuffix: `round-${thread.execution.gather_rounds + 1}`,
+          reason: `Follow-up gather pass for unresolved claim ${claim.claim_id}.`,
+        });
+      }
     }
   }
 

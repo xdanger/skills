@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSession } from "../../core/session_schema.mjs";
-import { planSession } from "../../core/planner.mjs";
+import { applyResearchPlan, planSession } from "../../core/planner.mjs";
 import { advanceStage, scoreSession, updateStopStatus } from "../../core/scorer.mjs";
 import { createFixtureAdapters, createTestRuntime } from "../fixtures/provider_fixtures.mjs";
 
@@ -146,4 +146,41 @@ test("open typed blockers keep the session from claiming stop", async () => {
 
   assert.equal(session.stop_status.decision, "continue");
   assert.ok(session.stop_status.remaining_gaps.includes("Need stronger enterprise proof points."));
+});
+
+test("advanceStage does not invent new work when an authored control surface exists", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  session.work_items = [];
+  applyResearchPlan(session, {
+    delta_plan: {
+      delta_plan_id: "delta-no-auto",
+      summary: "Do not infer extra work beyond authored control.",
+    },
+  });
+
+  scoreSession(session);
+  updateStopStatus(session);
+  advanceStage(session);
+
+  assert.equal(
+    session.work_items.some((item) => item.kind === "gather_thread" || item.kind === "verify_claim"),
+    false,
+  );
+  assert.ok(session.work_items.some((item) => item.kind === "synthesize_session"));
 });
