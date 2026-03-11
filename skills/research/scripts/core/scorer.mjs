@@ -1,0 +1,262 @@
+import {
+  appendDecision,
+  getHighPriorityClaims,
+  getThreadById,
+  isPrimarySource,
+  isRealEvidence,
+  linkedClaimEvidence,
+  queueWorkItem,
+  refreshThreadExecutionState,
+  syncSessionStage,
+} from "./session_schema.mjs";
+import { depthProfile, isTimeSensitiveGoal } from "./router.mjs";
+
+function resolvedEvidenceForClaim(session, claimId) {
+  return linkedClaimEvidence(session, claimId, ["support", "oppose"]).filter((item) =>
+    isRealEvidence(item),
+  );
+}
+
+function claimIsOpen(claim) {
+  const assessment = claim.assessment ?? {
+    sufficiency: "unassessed",
+    resolution_state: "unassessed",
+  };
+  return (
+    claim.verification.stale ||
+    assessment.sufficiency !== "sufficient" ||
+    assessment.resolution_state === "contested"
+  );
+}
+
+function hasQueuedWork(session, kind, scopeId) {
+  return session.work_items.some(
+    (item) =>
+      item.kind === kind &&
+      item.scope_id === scopeId &&
+      (item.status === "queued" || item.status === "in_progress"),
+  );
+}
+
+function claimIsExhausted(session, claim) {
+  const thread = getThreadById(session, claim.thread_id);
+  if (!thread) {
+    return false;
+  }
+  const profile = depthProfile(session.constraints.depth);
+  return (
+    thread.execution.gather_rounds >= profile.maxGatherRounds &&
+    claim.verification.attempts >= 1 &&
+    !hasQueuedWork(session, "gather_thread", thread.thread_id) &&
+    !hasQueuedWork(session, "verify_claim", claim.claim_id)
+  );
+}
+
+export function scoreSession(session) {
+  const highClaims = getHighPriorityClaims(session);
+  if (highClaims.length === 0) {
+    session.scores = {
+      claim_coverage_score: 0,
+      primary_source_score: 0,
+      source_diversity_score: 0,
+      contradiction_penalty: 0,
+      recency_score: 1,
+      confidence_score: 0,
+    };
+    return session.scores;
+  }
+
+  const covered = highClaims.filter((claim) =>
+    session.evidence.some((item) => {
+      if (!isRealEvidence(item)) {
+        return false;
+      }
+      return item.claim_links.some((link) => link.claim_id === claim.claim_id);
+    }),
+  );
+  const resolved = highClaims.filter(
+    (claim) =>
+      !claim.verification.stale &&
+      (claim.assessment?.sufficiency ?? "unassessed") === "sufficient",
+  );
+  const primaryResolved = resolved.filter((claim) =>
+    resolvedEvidenceForClaim(session, claim.claim_id).some((item) =>
+      isPrimarySource(item.source_type),
+    ),
+  );
+  const supportedEvidence = resolved.flatMap((claim) =>
+    resolvedEvidenceForClaim(session, claim.claim_id),
+  );
+  const domains = new Set(supportedEvidence.map((item) => item.domain).filter(Boolean));
+  const sourceTypes = new Set(
+    supportedEvidence.map((item) => item.source_type).filter(Boolean),
+  );
+  const unresolvedContradictions = session.contradictions.filter(
+    (item) => item.status === "open",
+  );
+
+  const claimCoverageScore = covered.length / highClaims.length;
+  const primarySourceScore = resolved.length > 0 ? primaryResolved.length / resolved.length : 0;
+  const sourceDiversityScore = Math.min(1, (domains.size + sourceTypes.size) / 6);
+  const contradictionPenalty = unresolvedContradictions.length / highClaims.length;
+  const recencyScore = isTimeSensitiveGoal(session.goal)
+    ? session.evidence.some((item) => item.published_at)
+      ? 1
+      : 0.4
+    : 1;
+  const confidenceScore = Math.max(
+    0,
+    Math.min(
+      1,
+      claimCoverageScore * 0.35 +
+        primarySourceScore * 0.25 +
+        sourceDiversityScore * 0.2 +
+        recencyScore * 0.2 -
+        contradictionPenalty * 0.5,
+    ),
+  );
+
+  session.scores = {
+    claim_coverage_score: Number(claimCoverageScore.toFixed(2)),
+    primary_source_score: Number(primarySourceScore.toFixed(2)),
+    source_diversity_score: Number(sourceDiversityScore.toFixed(2)),
+    contradiction_penalty: Number(contradictionPenalty.toFixed(2)),
+    recency_score: Number(recencyScore.toFixed(2)),
+    confidence_score: Number(confidenceScore.toFixed(2)),
+  };
+  return session.scores;
+}
+
+export function updateStopStatus(session) {
+  refreshThreadExecutionState(session);
+
+  if (
+    session.status === "needs_recovery" &&
+    session.handoff?.state === "submission_uncertain"
+  ) {
+    session.stop_status = {
+      decision: "handoff",
+      reason:
+        "The previous Manus submission was interrupted after the handoff checkpoint. Rejoin or inspect the remote task before continuing.",
+      open_claim_ids: getHighPriorityClaims(session).map((claim) => claim.claim_id),
+      remaining_gaps: session.stop_status.remaining_gaps,
+    };
+    return session.stop_status;
+  }
+
+  if (session.handoff?.state === "submitted" && session.status === "waiting_remote") {
+    session.stop_status = {
+      decision: "handoff",
+      reason: session.handoff.reason,
+      open_claim_ids: getHighPriorityClaims(session)
+        .filter((claim) => claimIsOpen(claim))
+        .map((claim) => claim.claim_id),
+      remaining_gaps: session.stop_status.remaining_gaps,
+    };
+    return session.stop_status;
+  }
+
+  const highClaims = getHighPriorityClaims(session);
+  const openClaims = highClaims.filter((claim) => claimIsOpen(claim));
+  const allOpenClaimsExhausted =
+    openClaims.length > 0 && openClaims.every((claim) => claimIsExhausted(session, claim));
+
+  const decision =
+    (openClaims.length === 0 &&
+      session.scores.primary_source_score >= 0.5 &&
+      session.scores.contradiction_penalty === 0) ||
+    allOpenClaimsExhausted
+      ? "stop"
+      : "continue";
+
+  session.stop_status = {
+    decision,
+    reason:
+      decision === "stop"
+        ? allOpenClaimsExhausted
+          ? "Automatic retrieval reached the depth budget, so the session will return a partial synthesis with explicit gaps."
+          : "High-priority claims are sufficiently supported with acceptable primary-source coverage."
+        : "Important claims remain unresolved, tentative, contradictory, stale, or under-evidenced.",
+    open_claim_ids: openClaims.map((claim) => claim.claim_id),
+    remaining_gaps: openClaims.map((claim) => claim.text),
+  };
+  return session.stop_status;
+}
+
+export function advanceStage(session) {
+  refreshThreadExecutionState(session);
+  updateStopStatus(session);
+
+  if (session.handoff?.state === "submitted" && session.status === "waiting_remote") {
+    return syncSessionStage(session);
+  }
+
+  const profile = depthProfile(session.constraints.depth);
+  for (const claim of getHighPriorityClaims(session)) {
+    const thread = getThreadById(session, claim.thread_id);
+    if (!thread) {
+      continue;
+    }
+
+    if (claimIsOpen(claim) && claim.verification.status !== "queued") {
+      queueWorkItem(session, {
+        kind: "verify_claim",
+        scopeType: "claim",
+        scopeId: claim.claim_id,
+        reason: `Claim ${claim.claim_id} remains unresolved after scoring.`,
+      });
+      claim.verification.status = "queued";
+    }
+
+    if (
+      claimIsOpen(claim) &&
+      !hasQueuedWork(session, "gather_thread", thread.thread_id) &&
+      thread.execution.gather_rounds < profile.maxGatherRounds
+    ) {
+      queueWorkItem(session, {
+        kind: "gather_thread",
+        scopeType: "thread",
+        scopeId: thread.thread_id,
+        keySuffix: `round-${thread.execution.gather_rounds + 1}`,
+        reason: `Follow-up gather pass for unresolved claim ${claim.claim_id}.`,
+      });
+    }
+  }
+
+  const hasNonSynthesisWork = session.work_items.some(
+    (item) =>
+      item.kind !== "synthesize_session" &&
+      (item.status === "queued" || item.status === "in_progress"),
+  );
+  if (
+    session.stop_status.decision === "stop" &&
+    !hasQueuedWork(session, "synthesize_session", session.session_id)
+  ) {
+    queueWorkItem(session, {
+      kind: "synthesize_session",
+      scopeType: "session",
+      scopeId: session.session_id,
+      reason: session.stop_status.reason,
+    });
+  } else if (
+    !hasNonSynthesisWork &&
+    !hasQueuedWork(session, "synthesize_session", session.session_id)
+  ) {
+    queueWorkItem(session, {
+      kind: "synthesize_session",
+      scopeType: "session",
+      scopeId: session.session_id,
+      reason: "No more automatic work items remain; produce the best current synthesis.",
+    });
+  }
+
+  return syncSessionStage(session);
+}
+
+export function recordStageDecision(session) {
+  appendDecision(session, "score", "Updated sufficiency scores, stage, and stop decision.", {
+    scores: session.scores,
+    stop_status: session.stop_status,
+    stage: session.stage,
+  });
+}
