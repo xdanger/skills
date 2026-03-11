@@ -46,7 +46,9 @@ function compatibleRemainingGaps(session, openGaps, openClaims) {
     (summary) =>
       !session.gaps.some((gap) => gap.summary === summary) || activeGapSummaries.has(summary),
   );
-  return [...new Set([...legacyTextOnlyGaps, ...openGaps.map((gap) => gap.summary), ...openClaims])];
+  return [
+    ...new Set([...legacyTextOnlyGaps, ...openGaps.map((gap) => gap.summary), ...openClaims]),
+  ];
 }
 
 function hasAuthoredControlSurface(session) {
@@ -55,7 +57,7 @@ function hasAuthoredControlSurface(session) {
   );
   return Boolean(
     session.plan_state?.control_mode === "agent_authored" ||
-      currentPlan?.source === "agent_authored",
+    currentPlan?.source === "agent_authored",
   );
 }
 
@@ -222,37 +224,60 @@ export function advanceStage(session) {
     return syncSessionStage(session);
   }
 
-  if (!authoredControl) {
-    const profile = depthProfile(session.constraints.depth);
-    for (const claim of getHighPriorityClaims(session)) {
-      const thread = getThreadById(session, claim.thread_id);
-      if (!thread) {
-        continue;
-      }
+  if (authoredControl) {
+    const hasNonSynthesisWork = session.work_items.some(
+      (item) =>
+        item.kind !== "synthesize_session" &&
+        (item.status === "queued" || item.status === "in_progress"),
+    );
+    if (
+      session.stop_status.decision === "stop" &&
+      !hasQueuedWork(session, "synthesize_session", session.session_id)
+    ) {
+      queueWorkItem(session, {
+        kind: "synthesize_session",
+        scopeType: "session",
+        scopeId: session.session_id,
+        reason: session.stop_status.reason,
+      });
+    } else if (
+      !hasNonSynthesisWork &&
+      !hasQueuedWork(session, "synthesize_session", session.session_id)
+    ) {
+      session.stage = openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
+    }
+    return syncSessionStage(session);
+  }
 
-      if (claimIsOpen(claim) && claim.verification.status !== "queued") {
-        queueWorkItem(session, {
-          kind: "verify_claim",
-          scopeType: "claim",
-          scopeId: claim.claim_id,
-          reason: `Claim ${claim.claim_id} remains unresolved after scoring.`,
-        });
-        claim.verification.status = "queued";
-      }
+  const profile = depthProfile(session.constraints.depth);
+  for (const claim of getHighPriorityClaims(session)) {
+    const thread = getThreadById(session, claim.thread_id);
+    if (!thread) {
+      continue;
+    }
 
-      if (
-        claimIsOpen(claim) &&
-        !hasQueuedWork(session, "gather_thread", thread.thread_id) &&
-        thread.execution.gather_rounds < profile.maxGatherRounds
-      ) {
-        queueWorkItem(session, {
-          kind: "gather_thread",
-          scopeType: "thread",
-          scopeId: thread.thread_id,
-          keySuffix: `round-${thread.execution.gather_rounds + 1}`,
-          reason: `Follow-up gather pass for unresolved claim ${claim.claim_id}.`,
-        });
-      }
+    if (claimIsOpen(claim) && claim.verification.status !== "queued") {
+      queueWorkItem(session, {
+        kind: "verify_claim",
+        scopeType: "claim",
+        scopeId: claim.claim_id,
+        reason: `Claim ${claim.claim_id} remains unresolved after scoring.`,
+      });
+      claim.verification.status = "queued";
+    }
+
+    if (
+      claimIsOpen(claim) &&
+      !hasQueuedWork(session, "gather_thread", thread.thread_id) &&
+      thread.execution.gather_rounds < profile.maxGatherRounds
+    ) {
+      queueWorkItem(session, {
+        kind: "gather_thread",
+        scopeType: "thread",
+        scopeId: thread.thread_id,
+        keySuffix: `round-${thread.execution.gather_rounds + 1}`,
+        reason: `Follow-up gather pass for unresolved claim ${claim.claim_id}.`,
+      });
     }
   }
 
@@ -271,12 +296,6 @@ export function advanceStage(session) {
       scopeId: session.session_id,
       reason: session.stop_status.reason,
     });
-  } else if (
-    authoredControl &&
-    !hasNonSynthesisWork &&
-    !hasQueuedWork(session, "synthesize_session", session.session_id)
-  ) {
-    session.stage = openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
   } else if (
     !hasNonSynthesisWork &&
     !hasQueuedWork(session, "synthesize_session", session.session_id)

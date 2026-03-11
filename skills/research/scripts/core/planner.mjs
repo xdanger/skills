@@ -10,7 +10,6 @@ import {
   recordPlanVersion,
   syncSessionStage,
   upsertGap,
-  uniqueBy,
 } from "./session_schema.mjs";
 import {
   compileAgentPlan as compileAgentPlanArtifact,
@@ -18,478 +17,21 @@ import {
   compileDeltaPlan as compileDeltaPlanArtifact,
 } from "./artifact_compiler.mjs";
 import { classifyTaskShape, normalizeGoal } from "./router.mjs";
+import {
+  buildFallbackPlan,
+  defaultComparisonAxes,
+  inferContinuationFromProse,
+  planningArtifactsFromResearch,
+} from "./planner_legacy.mjs";
 
-function splitSentences(text) {
-  return String(text)
-    .split(/(?<=[.!?])\s+/u)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function domainsFromText(text) {
-  return mergeUniqueStrings(
-    [],
-    (String(text).match(/\b[a-z0-9.-]+\.[a-z]{2,}\b/giu) || []).map((item) =>
-      item.replace(/^www\./u, "").toLowerCase(),
-    ),
-  );
-}
-
-function tokenize(text) {
-  return new Set(
-    String(text)
-      .toLowerCase()
-      .split(/[^a-z0-9]+/u)
-      .map((item) => item.trim())
-      .filter((item) => item.length > 2),
-  );
-}
-
-function overlapScore(leftText, rightText) {
-  const left = tokenize(leftText);
-  const right = tokenize(rightText);
-  if (left.size === 0 || right.size === 0) {
-    return 0;
-  }
-  let matches = 0;
-  for (const token of left) {
-    if (right.has(token)) {
-      matches += 1;
-    }
-  }
-  return matches;
-}
-
-function defaultComparisonAxes(taskShape) {
-  if (taskShape === "broad") {
-    return ["pricing", "deployment", "security", "adoption", "workflow"];
-  }
-  if (taskShape === "site") {
-    return ["coverage", "policy", "documentation", "limitations"];
-  }
-  return ["claim", "official evidence", "caveats"];
-}
-
-function hasActiveAuthoredControlSurface(session) {
+function hasAuthoredControlSurface(session) {
   const currentPlan = ensureArray(session.plan_versions).find(
     (item) => item.plan_version_id === session.plan_state?.current_plan_version_id,
   );
   return Boolean(
     session.plan_state?.control_mode === "agent_authored" ||
-      currentPlan?.source === "agent_authored",
+    currentPlan?.source === "agent_authored",
   );
-}
-
-function createThread(title, intent, subqueries, notes = "") {
-  return {
-    thread_id: createId("thread"),
-    title,
-    intent,
-    subqueries,
-    claim_ids: [],
-    notes,
-    execution: {
-      gather_status: "queued",
-      verify_status: "queued",
-      gather_rounds: 0,
-      last_gathered_at: null,
-      last_verified_at: null,
-      open_claim_ids: [],
-      last_continuation_id: null,
-    },
-  };
-}
-
-function createClaim(threadId, text, claimType, priority, answerRelevance = "high") {
-  return {
-    claim_id: createId("claim"),
-    thread_id: threadId,
-    text,
-    claim_type: claimType,
-    answer_relevance: answerRelevance,
-    priority,
-    status: "open",
-    why_it_matters: "",
-    evidence_ids: [],
-    verification: {
-      status: "queued",
-      attempts: 0,
-      stale: false,
-      last_checked_at: null,
-      last_continuation_id: null,
-    },
-    assessment: {
-      verdict: "unproven",
-      sufficiency: "unassessed",
-      resolution_state: "unassessed",
-      support_evidence_ids: [],
-      oppose_evidence_ids: [],
-      context_evidence_ids: [],
-      primary_evidence_ids: [],
-      missing_dimensions: [],
-      reason: "",
-      confidence_label: "low",
-      last_evaluated_at: null,
-    },
-  };
-}
-
-function attachClaimsToThreads(threads, claims) {
-  const claimsByThread = new Map(threads.map((thread) => [thread.thread_id, []]));
-  for (const claim of claims) {
-    claimsByThread.get(claim.thread_id)?.push(claim.claim_id);
-  }
-  return threads.map((thread) => ({
-    ...thread,
-    claim_ids: claimsByThread.get(thread.thread_id) ?? [],
-    execution: {
-      ...thread.execution,
-      open_claim_ids: claimsByThread.get(thread.thread_id) ?? [],
-    },
-  }));
-}
-
-function buildBroadPlan(goal) {
-  const landscapeThread = createThread(
-    "Product landscape",
-    "identify the main products or categories relevant to the goal",
-    [`${goal} leading products`, `${goal} market landscape`],
-  );
-  const pricingThread = createThread(
-    "Pricing and packaging",
-    "determine pricing visibility, packaging differences, and sales-gated plans",
-    [`${goal} pricing`, `${goal} pricing packaging`],
-  );
-  const deploymentThread = createThread(
-    "Deployment and security posture",
-    "compare deployment, security, hosting, and compliance positioning",
-    [`${goal} deployment security`, `${goal} hosting compliance`],
-  );
-  const adoptionThread = createThread(
-    "Audience and adoption",
-    "compare target users, enterprise proof points, and workflow fit",
-    [`${goal} enterprise adoption`, `${goal} target users workflow`],
-  );
-
-  const claims = [
-    createClaim(
-      landscapeThread.thread_id,
-      `The leading options in ${goal} differ in scope, positioning, or product category.`,
-      "positioning",
-      "high",
-    ),
-    createClaim(
-      pricingThread.thread_id,
-      `The leading options in ${goal} differ in pricing visibility, packaging, or sales-gated plans.`,
-      "comparison",
-      "high",
-    ),
-    createClaim(
-      deploymentThread.thread_id,
-      `The leading options in ${goal} differ in deployment model, security posture, or data handling.`,
-      "capability",
-      "high",
-    ),
-    createClaim(
-      adoptionThread.thread_id,
-      `The leading options in ${goal} target different audiences or show different levels of enterprise adoption.`,
-      "positioning",
-      "high",
-    ),
-  ];
-
-  return {
-    threads: attachClaimsToThreads(
-      [landscapeThread, pricingThread, deploymentThread, adoptionThread],
-      claims,
-    ),
-    claims,
-    remainingGaps: [
-      "Which high-priority claims still lack primary-source evidence?",
-      "Which important comparison dimensions remain under-covered?",
-    ],
-  };
-}
-
-function capitalizeSentence(text) {
-  const value = String(text).trim();
-  if (!value) {
-    return value;
-  }
-  return value[0].toUpperCase() + value.slice(1);
-}
-
-function ensureSentence(text) {
-  const value = String(text)
-    .trim()
-    .replace(/[.?!]+$/u, "");
-  if (!value) {
-    return value;
-  }
-  return `${capitalizeSentence(value)}.`;
-}
-
-function stripVerificationFollowUps(goal) {
-  return String(goal)
-    .replace(/,?\s+and\s+if\s+so\b.*$/iu, "")
-    .replace(/,?\s+if\s+so\b.*$/iu, "")
-    .replace(/,?\s+and\s+(what|which|how|where|when)\b.*$/iu, "")
-    .replace(/,?\s+(what|which)\s+is\s+the\s+evidence\b.*$/iu, "")
-    .trim();
-}
-
-function conjugateThirdPerson(verb) {
-  const lower = String(verb).toLowerCase();
-  if (lower === "have") {
-    return "has";
-  }
-  if (/(s|sh|ch|x|z|o)$/u.test(lower)) {
-    return `${lower}es`;
-  }
-  if (/[^aeiou]y$/u.test(lower)) {
-    return `${lower.slice(0, -1)}ies`;
-  }
-  return `${lower}s`;
-}
-
-function statementFromQuestion(goal) {
-  const clean = stripVerificationFollowUps(goal).replace(/\?+$/u, "").trim();
-  if (!clean) {
-    return ensureSentence(goal);
-  }
-
-  const doesMatch = clean.match(/^does\s+(.+?)\s+([a-z][a-z-]+)\s+(.+)$/iu);
-  if (doesMatch) {
-    const [, subject, verb, rest] = doesMatch;
-    return ensureSentence(`${subject} ${conjugateThirdPerson(verb)} ${rest}`);
-  }
-
-  const modalMatch = clean.match(
-    /^(can|could|should|would|will|did|do|has|have)\s+(.+?)\s+([a-z][a-z-]+)\s+(.+)$/iu,
-  );
-  if (modalMatch) {
-    const [, modal, subject, verb, rest] = modalMatch;
-    return ensureSentence(`${subject} ${modal.toLowerCase()} ${verb} ${rest}`);
-  }
-
-  const beMatch = clean.match(
-    /^(is|are|was|were)\s+(.+?)\s+((?:soc ?2|iso ?27001|gdpr|hipaa|fedramp|available|supported|certified|deprecated|documented|enabled|included|listed|public|private|required|free|ga|beta)\b.+)$/iu,
-  );
-  if (beMatch) {
-    const [, auxiliary, subject, predicate] = beMatch;
-    return ensureSentence(`${subject} ${auxiliary.toLowerCase()} ${predicate}`);
-  }
-
-  return ensureSentence(clean);
-}
-
-function subjectFromStatement(statement) {
-  const clean = String(statement)
-    .replace(/[.?!]+$/u, "")
-    .trim();
-  const match = clean.match(
-    /^(.+?)\s+(?:is|are|was|were|has|have|supports?|exposes?|offers?|documents?|allows?|includes?|lists?|uses?)\b/iu,
-  );
-  return match?.[1]?.trim() ?? "";
-}
-
-function endpointSubqueries(goal) {
-  const directStatement = statementFromQuestion(goal);
-  const subject = subjectFromStatement(directStatement);
-  const subjectDomainHint =
-    /^[a-z0-9-]+$/iu.test(subject) && !/\s/u.test(subject)
-      ? `site:${subject.toLowerCase().replace(/[^a-z0-9-]+/giu, "")}.com`
-      : "";
-  const focus = [
-    subject,
-    /\bdeep research\b/iu.test(goal) ? "deep research" : "",
-    /\bapi\b/iu.test(goal) ? "API" : "",
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-  if (!focus) {
-    return [`${goal} endpoint`, `${goal} official docs`, `${goal} API reference`];
-  }
-  return uniqueBy(
-    [
-      `${focus} Responses API`,
-      `${focus} endpoint`,
-      `${focus} API reference`,
-      subjectDomainHint ? `${focus} endpoint ${subjectDomainHint}` : "",
-      `${focus} official docs`,
-    ].filter(Boolean),
-    (item) => item.toLowerCase(),
-  );
-}
-
-function detailThreadForGoal(goal, directClaim) {
-  const normalizedDirectClaim = String(directClaim).replace(/[.?!]+$/u, "");
-  if (/\b(endpoint|api surface|route|path|responses api|response api)\b/iu.test(goal)) {
-    return {
-      title: "Concrete API surface",
-      intent:
-        "identify the exact endpoint, API surface, or mechanism named in official sources",
-      subqueries: endpointSubqueries(goal),
-      claim: normalizedDirectClaim
-        ? `${normalizedDirectClaim} through a documented endpoint or API surface.`
-        : `Official sources name the endpoint, API surface, or mechanism needed to answer: ${goal}.`,
-      claimType: "capability",
-    };
-  }
-
-  if (/\b(price|pricing|cost|billing|plan)\b/iu.test(goal)) {
-    return {
-      title: "Pricing details",
-      intent:
-        "identify the concrete pricing, packaging, or billing details that answer the question",
-      subqueries: [`${goal} pricing`, `${goal} official pricing`],
-      claim: `Official pricing or packaging details directly answer: ${goal}.`,
-      claimType: "comparison",
-    };
-  }
-
-  return {
-    title: "Primary documentation",
-    intent:
-      "find the official documentation or policy page that most directly answers the question",
-    subqueries: [`${goal} official documentation`, `${goal} docs`],
-    claim: `A primary or official source directly answers: ${goal}.`,
-    claimType: "documentation",
-  };
-}
-
-function buildVerificationPlan(goal) {
-  const directClaim = statementFromQuestion(goal);
-  const detailThreadPlan = detailThreadForGoal(goal, directClaim);
-  const directThread = createThread(
-    "Direct answer",
-    "answer the user's question directly from primary or official evidence",
-    [`${goal} official evidence`, `${goal} primary source`],
-  );
-  const detailThread = createThread(
-    detailThreadPlan.title,
-    detailThreadPlan.intent,
-    detailThreadPlan.subqueries,
-  );
-  const caveatThread = createThread(
-    "Caveats and contradictory evidence",
-    "look for exceptions, caveats, dates, or contradictory statements",
-    [`${goal} caveats`, `${goal} contradictory evidence`],
-  );
-
-  const claims = [
-    createClaim(directThread.thread_id, directClaim, "fact", "high"),
-    createClaim(
-      detailThread.thread_id,
-      detailThreadPlan.claim,
-      detailThreadPlan.claimType,
-      "high",
-    ),
-    createClaim(
-      caveatThread.thread_id,
-      `Important caveats, exclusions, or contradictory evidence exist for: ${goal}.`,
-      "policy",
-      "medium",
-    ),
-  ];
-
-  return {
-    threads: attachClaimsToThreads([directThread, detailThread, caveatThread], claims),
-    claims,
-    remainingGaps: [
-      "Which official source most directly answers the user's question?",
-      "Which concrete detail would a user need to act on the answer?",
-      "Does any primary source contradict, qualify, or narrow the answer?",
-      "Is the evidence current enough for the user's question?",
-    ],
-  };
-}
-
-function buildSitePlan(goal) {
-  const docsThread = createThread(
-    "Relevant documentation",
-    "identify the pages that directly document the requested topic",
-    [goal],
-  );
-  const policyThread = createThread(
-    "Policy or explicit statements",
-    "capture direct statements or policy language related to the goal",
-    [goal],
-  );
-  const limitationThread = createThread(
-    "Gaps or omissions",
-    "identify what the site does not make explicit",
-    [goal],
-  );
-
-  const claims = [
-    createClaim(
-      docsThread.thread_id,
-      `The target site documents the requested topic for: ${goal}.`,
-      "capability",
-      "high",
-    ),
-    createClaim(
-      policyThread.thread_id,
-      `The target site includes explicit statements or policy language relevant to: ${goal}.`,
-      "policy",
-      "high",
-    ),
-    createClaim(
-      limitationThread.thread_id,
-      `The target site leaves important details unspecified or scattered for: ${goal}.`,
-      "fact",
-      "medium",
-    ),
-  ];
-
-  return {
-    threads: attachClaimsToThreads([docsThread, policyThread, limitationThread], claims),
-    claims,
-    remainingGaps: [
-      "Which paths on the site contain the strongest evidence?",
-      "What important details are still not explicit on the site?",
-    ],
-  };
-}
-
-function buildAsyncPlan(goal) {
-  const asyncThread = createThread(
-    "Async handoff",
-    "prepare a remote handoff for artifact-heavy or connector-heavy work",
-    [goal],
-  );
-  const claims = [
-    createClaim(
-      asyncThread.thread_id,
-      `This task needs async execution or artifact generation for: ${goal}.`,
-      "capability",
-      "high",
-    ),
-  ];
-  return {
-    threads: attachClaimsToThreads([asyncThread], claims),
-    claims,
-    remainingGaps: ["What follow-up or deliverable format will the remote worker need?"],
-  };
-}
-
-function planningArtifactsFromResearch(result, taskShape) {
-  const content = String(result.content ?? result.answer ?? "").trim();
-  if (!content) {
-    return {
-      hypotheses: [],
-      domain_hints: [],
-      comparison_axes: defaultComparisonAxes(taskShape),
-    };
-  }
-  const sentences = splitSentences(content);
-  return {
-    hypotheses: sentences.slice(0, 4),
-    domain_hints: domainsFromText(content),
-    comparison_axes: defaultComparisonAxes(taskShape),
-  };
 }
 
 function queuePlanWork(session, parentWorkItemId = null) {
@@ -567,7 +109,7 @@ export function mergeResearchBrief(session, researchBrief = {}) {
       notes: mergeUniqueStrings(existing.notes, researchBrief.source_policy.notes),
       mode:
         researchBrief.source_policy.mode ||
-        (allowDomains.length > 0 ? "allowlist" : existing.mode ?? "open"),
+        (allowDomains.length > 0 ? "allowlist" : (existing.mode ?? "open")),
     };
   }
   session.research_brief.clarification_notes = mergeUniqueStrings(
@@ -579,7 +121,9 @@ export function mergeResearchBrief(session, researchBrief = {}) {
 
 function ensureNotAwaitingPlanApproval(session) {
   if (requiresPlanApproval(session) && session.plan_state?.pending_plan_version_id) {
-    fail("This session has a pending plan approval. Approve the prepared plan before mutating it.");
+    fail(
+      "This session has a pending plan approval. Approve the prepared plan before mutating it.",
+    );
   }
 }
 
@@ -667,7 +211,10 @@ function applyContinuationPatch(
     continuation.operations.push(operation);
 
     if (operation.type === "merge_domains") {
-      session.constraints.domains = mergeUniqueStrings(session.constraints.domains, operation.domains);
+      session.constraints.domains = mergeUniqueStrings(
+        session.constraints.domains,
+        operation.domains,
+      );
       if (session.research_brief?.source_policy) {
         session.research_brief.source_policy.allow_domains = mergeUniqueStrings(
           session.research_brief.source_policy.allow_domains,
@@ -684,9 +231,10 @@ function applyContinuationPatch(
         ...operation.gap,
         created_by: operation.gap.created_by ?? "agent",
       });
-      session.stop_status.remaining_gaps = mergeUniqueStrings(session.stop_status.remaining_gaps, [
-        operation.gap.summary,
-      ]);
+      session.stop_status.remaining_gaps = mergeUniqueStrings(
+        session.stop_status.remaining_gaps,
+        [operation.gap.summary],
+      );
       continue;
     }
 
@@ -789,9 +337,14 @@ function applyDeltaPlan(
     (item) => item.delta_plan_id === compiled.delta_plan_id,
   );
   if (existing) {
-    appendDecision(session, "delta_plan_skip", "Skipped a duplicate agent-authored delta plan.", {
-      delta_plan_id: compiled.delta_plan_id,
-    });
+    appendDecision(
+      session,
+      "delta_plan_skip",
+      "Skipped a duplicate agent-authored delta plan.",
+      {
+        delta_plan_id: compiled.delta_plan_id,
+      },
+    );
     return existing;
   }
 
@@ -810,9 +363,10 @@ function applyDeltaPlan(
         ...update.gap,
         created_by: update.gap.created_by ?? "agent",
       });
-      session.stop_status.remaining_gaps = mergeUniqueStrings(session.stop_status.remaining_gaps, [
-        update.gap.summary,
-      ]);
+      session.stop_status.remaining_gaps = mergeUniqueStrings(
+        session.stop_status.remaining_gaps,
+        [update.gap.summary],
+      );
       continue;
     }
     const targetGap = ensureArray(session.gaps).find(
@@ -888,7 +442,8 @@ function applyDeltaPlan(
     }
     if (claimAction.action === "set_priority" && claimAction.priority) {
       claim.priority = claimAction.priority;
-      claim.answer_relevance = claimAction.priority === "high" ? "high" : claim.answer_relevance;
+      claim.answer_relevance =
+        claimAction.priority === "high" ? "high" : claim.answer_relevance;
     }
   }
 
@@ -1111,13 +666,39 @@ export async function planSession(session, runtime, workItem = null) {
   if (!session.goal) {
     session.goal = normalizeGoal(session.user_query);
   }
+
+  const authoredControl = hasAuthoredControlSurface(session);
+
+  if (authoredControl) {
+    if (!session.task_shape) {
+      session.task_shape = classifyTaskShape(session.user_query, session.constraints.domains);
+    }
+    const hasActiveWork = session.work_items.some(
+      (item) =>
+        (item.kind === "gather_thread" || item.kind === "handoff_session") &&
+        (item.status === "queued" || item.status === "in_progress"),
+    );
+    if (!hasActiveWork && session.threads.length > 0) {
+      queuePlanWork(session, workItem?.work_item_id ?? null);
+    }
+    appendDecision(
+      session,
+      "plan",
+      "Authored control surface is active; skipping runtime planning.",
+      {
+        task_shape: session.task_shape,
+        thread_count: session.threads.length,
+        claim_count: session.claims.length,
+      },
+    );
+    return;
+  }
+
   if (!session.task_shape) {
     session.task_shape = classifyTaskShape(session.user_query, session.constraints.domains);
   }
-  const authoredControl = hasActiveAuthoredControlSurface(session);
 
   if (
-    !authoredControl &&
     session.task_shape === "broad" &&
     session.constraints.depth !== "quick" &&
     session.planning_artifacts.hypotheses.length === 0
@@ -1143,15 +724,8 @@ export async function planSession(session, runtime, workItem = null) {
     session.planning_artifacts.comparison_axes = artifacts.comparison_axes;
   }
 
-  if (!authoredControl && (session.threads.length === 0 || session.claims.length === 0)) {
-    const plan =
-      session.task_shape === "broad"
-        ? buildBroadPlan(session.goal)
-        : session.task_shape === "site"
-          ? buildSitePlan(session.goal)
-          : session.task_shape === "async"
-            ? buildAsyncPlan(session.goal)
-            : buildVerificationPlan(session.goal);
+  if (session.threads.length === 0 || session.claims.length === 0) {
+    const plan = buildFallbackPlan(session);
 
     session.threads = plan.threads;
     session.claims = plan.claims;
@@ -1179,78 +753,30 @@ export async function planSession(session, runtime, workItem = null) {
       researchBrief: session.research_brief,
       remainingGaps: session.stop_status.remaining_gaps,
     });
-    appendDecision(session, "plan_prepare", "Prepared a research plan and paused for approval.", {
-      task_shape: session.task_shape,
-      thread_count: session.threads.length,
-      claim_count: session.claims.length,
-    });
+    appendDecision(
+      session,
+      "plan_prepare",
+      "Prepared a research plan and paused for approval.",
+      {
+        task_shape: session.task_shape,
+        thread_count: session.threads.length,
+        claim_count: session.claims.length,
+      },
+    );
     syncSessionStage(session);
     return;
   }
 
-  if (!authoredControl) {
-    session.plan_state.control_mode = "runtime_fallback";
-    session.plan_state.awaiting_agent_decision_since = null;
-  }
+  session.plan_state.control_mode = "runtime_fallback";
+  session.plan_state.awaiting_agent_decision_since = null;
   queuePlanWork(session, workItem?.work_item_id ?? null);
   appendDecision(session, "plan", "Generated answer-bearing threads and queued work items.", {
     task_shape: session.task_shape,
     thread_count: session.threads.length,
     claim_count: session.claims.length,
+    source: "runtime_fallback",
+    authority: "low",
   });
-}
-
-function inferContinuationMode(instruction) {
-  const text = String(instruction).toLowerCase();
-  if (/\b(branch|separate|new angle|new thread)\b/.test(text)) {
-    return "branch";
-  }
-  if (/\b(verify|re-verify|double-check|confirm|validate|prove)\b/.test(text)) {
-    return "verify";
-  }
-  return "deepen";
-}
-
-function matchingThreads(session, instruction) {
-  return session.threads
-    .map((thread) => ({
-      thread,
-      score: overlapScore(instruction, `${thread.title} ${thread.intent} ${thread.notes}`),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score)
-    .map((item) => item.thread);
-}
-
-function matchingClaims(session, instruction) {
-  return session.claims
-    .map((claim) => ({
-      claim,
-      score: overlapScore(instruction, claim.text),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score)
-    .map((item) => item.claim);
-}
-
-function createContinuationThreadSpec(instruction, mode = "deepen") {
-  const title = String(instruction).slice(0, 72);
-  return {
-    title: `Follow-up: ${title}`,
-    intent: `address the continuation instruction: ${instruction}`,
-    subqueries: [instruction],
-    notes: "Created from a continuation instruction.",
-    claims: [
-      {
-        text:
-          mode === "verify"
-            ? instruction
-            : `There is URL-backed evidence that refines the session for: ${instruction}.`,
-        claim_type: "follow_up",
-        priority: "high",
-      },
-    ],
-  };
 }
 
 export function applyContinuationInstruction(session, instruction, domains = []) {
@@ -1259,68 +785,19 @@ export function applyContinuationInstruction(session, instruction, domains = [])
     return null;
   }
   ensureNotAwaitingPlanApproval(session);
-  const mode = inferContinuationMode(trimmed);
-  const operations = [
-    {
-      type: "add_gap",
-      gap: trimmed,
-      reason: "Continuation kept this angle explicitly open in the ledger.",
-    },
-  ];
-  if (domains.length > 0) {
-    operations.push({
-      type: "merge_domains",
-      domains,
-      reason: "Continuation introduced or reinforced domain constraints.",
-    });
-  }
 
-  if (mode === "verify") {
-    const matchedClaims = matchingClaims(session, trimmed).slice(0, 3);
-    if (matchedClaims.length > 0) {
-      for (const claim of matchedClaims) {
-        operations.push({
-          type: "mark_claim_stale",
-          claim_id: claim.claim_id,
-          reason: `Continuation requested verification for claim: ${claim.text}`,
-        });
-      }
-    } else {
-      operations.push({
-        type: "add_thread",
-        thread: createContinuationThreadSpec(trimmed, mode),
-        reason: "Continuation created a new focused verification thread.",
-      });
-    }
-  } else {
-    const matchedThreads = mode === "branch" ? [] : matchingThreads(session, trimmed).slice(0, 2);
-    if (matchedThreads.length > 0) {
-      for (const thread of matchedThreads) {
-        operations.push({
-          type: "requeue_thread",
-          thread_id: thread.thread_id,
-          reason: `Continuation requested deeper gathering for thread: ${thread.title}`,
-        });
-      }
-    } else {
-      operations.push({
-        type: "add_thread",
-        thread: createContinuationThreadSpec(trimmed, mode),
-        reason:
-          mode === "branch"
-            ? "Continuation branched into a new thread."
-            : "Continuation created a new follow-up thread.",
-      });
-    }
+  const inferred = inferContinuationFromProse(session, trimmed, domains);
+  if (!inferred) {
+    return null;
   }
 
   return applyContinuationPatch(
     session,
     {
-      instruction: trimmed,
-      mode,
-      domains,
-      operations,
+      instruction: inferred.instruction,
+      mode: inferred.mode,
+      domains: inferred.domains,
+      operations: inferred.operations,
     },
     { action: "instruction" },
   );
