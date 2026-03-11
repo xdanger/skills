@@ -36,3 +36,22 @@ test("inferClaimMatch falls back to context when the claim is not locally ground
 
   assert.equal(result.stance, "context");
 });
+
+test("inferClaimMatch requires concrete endpoint detail for endpoint-style claims", () => {
+  const claim = {
+    text: "Official sources name the endpoint, API surface, or mechanism needed to answer: Does OpenAI expose deep research in the API, and if so through which endpoint.",
+  };
+  const vague = inferClaimMatch(
+    claim,
+    "This guide discusses OpenAI-compatible endpoints and remote provider settings.",
+    "OpenAI deep research endpoint official docs",
+  );
+  const concrete = inferClaimMatch(
+    claim,
+    "OpenAI exposes deep research in the API through the Responses API.",
+    "OpenAI deep research endpoint official docs",
+  );
+
+  assert.equal(vague.stance, "context");
+  assert.equal(concrete.stance, "support");
+});

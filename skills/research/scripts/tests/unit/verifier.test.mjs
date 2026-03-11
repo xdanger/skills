@@ -34,8 +34,8 @@ test("verifyClaims uses claim-centric queries and creates contradictions when ne
           url,
           title: url,
           raw_content: url.includes("/no")
-            ? `${query} is not available`
-            : `${query} is available`,
+            ? "Official record states product X is not SOC 2 certified."
+            : "Official record states product X is SOC 2 certified.",
         })),
       };
     },

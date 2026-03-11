@@ -21,5 +21,6 @@ test("broad market scan fans out into multiple searches and produces citations",
   assert.ok(session.entities.length > 0);
   assert.ok(session.observations.length > 0);
   assert.ok(session.final_answer.synthesis_sections.length > 0);
-  assert.equal(session.session_version, 4);
+  assert.equal(session.session_version, 5);
+  assert.ok(session.findings.length > 0);
 });

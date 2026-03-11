@@ -46,6 +46,19 @@ export function classifyTaskShape(query, domains = []) {
   const directQuestionHint =
     /^(is|are|can|could|does|do|did|has|have|what|which|who|when|where|why|how)\b/.test(text) ||
     /\?$/.test(text);
+  const specificAnswerHint =
+    /\b(endpoint|api surface|route|path|parameter|pricing|price|availability|support|supports|certified|compliant|documented|documentation|docs)\b/.test(
+      text,
+    ) || /\bif so\b/.test(text);
+  const discoveryQuestionHint =
+    /^(what|which|who)\b/.test(text) &&
+    /\b(top|best|leading|main|vendors|alternatives|options|competitors|tools|products|platforms)\b/.test(
+      text,
+    );
+  const explanatoryQuestionHint =
+    /^(what|how|why)\b/.test(text) &&
+    !specificAnswerHint &&
+    !/\b(evidence|verify|verification|official|prove|proof)\b/.test(text);
   const siteHint =
     hasUrl ||
     (domains.length > 0 &&
@@ -65,13 +78,16 @@ export function classifyTaskShape(query, domains = []) {
   if (siteHint) {
     return "site";
   }
-  if (broadHint) {
+  if (broadHint || discoveryQuestionHint) {
     return "broad";
   }
-  if (directQuestionHint) {
+  if (explanatoryQuestionHint) {
+    return "broad";
+  }
+  if ((directQuestionHint && specificAnswerHint) || verificationHint) {
     return "verification";
   }
-  if (verificationHint) {
+  if (directQuestionHint) {
     return "verification";
   }
   return "broad";

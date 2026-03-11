@@ -44,6 +44,14 @@ function domainFromUrl(url) {
   }
 }
 
+function pathnameFromUrl(url) {
+  try {
+    return new URL(url).pathname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function capitalizeWords(text) {
   return String(text)
     .split(/\s+/u)
@@ -67,8 +75,29 @@ function entityNameFromUrl(url, title = "") {
 
 export function inferSourceType(url, title = "", snippet = "") {
   const host = domainFromUrl(url);
-  const text = `${host} ${title} ${snippet}`.toLowerCase();
-  if (/^(official|docs|developer)\./u.test(host)) {
+  const pathname = pathnameFromUrl(url);
+  const titleText = String(title).toLowerCase();
+  const text = `${host} ${pathname} ${title} ${snippet}`.toLowerCase();
+
+  if (
+    /(community\.|forum\.|forums\.|discuss\.|stackoverflow\.com|reddit\.com|news\.ycombinator\.com|medium\.com|substack\.com|github\.com)/.test(
+      host,
+    )
+  ) {
+    return "community";
+  }
+  if (/\/(forum|forums|community|discussion|discussions)(\/|$)/.test(pathname)) {
+    return "community";
+  }
+  if (
+    /(reuters\.com|bloomberg\.com|nytimes\.com|theverge\.com|techcrunch\.com|wired\.com|arstechnica\.com|venturebeat\.com)/.test(
+      host,
+    ) ||
+    /\/(news|press)(\/|$)/.test(pathname)
+  ) {
+    return "news";
+  }
+  if (/^(official|docs|developers?|support|help|cookbook)\./u.test(host)) {
     return host.startsWith("official.") ? "official" : "docs";
   }
   if (host.endsWith(".gov")) {
@@ -77,18 +106,19 @@ export function inferSourceType(url, title = "", snippet = "") {
   if (host.endsWith(".edu") || host.includes("arxiv.org")) {
     return "academic";
   }
-  if (/docs|developer|api|reference|sdk|manual/.test(text)) {
-    return "docs";
-  }
   if (
-    /(reuters\.com|bloomberg\.com|nytimes\.com|theverge\.com|techcrunch\.com|wired\.com|news)/.test(
-      text,
+    /\b(documentation|docs|developer guide|developer docs|api reference|reference|sdk|manual|help center)\b/.test(
+      titleText,
+    ) ||
+    /\bcookbook\b/.test(titleText) ||
+    /\/(docs|documentation|reference|api|guides|help|manual|policies?|changelog|cookbook)(\/|$)/.test(
+      pathname,
     )
   ) {
-    return "news";
+    return "docs";
   }
-  if (/(reddit\.com|github\.com|news\.ycombinator\.com|medium\.com|substack\.com)/.test(text)) {
-    return "community";
+  if (/\b(news|press release)\b/.test(text)) {
+    return "news";
   }
   return "vendor";
 }
@@ -151,6 +181,25 @@ export function inferClaimMatch(claim, snippet, query) {
   } else if (positivePattern.test(best.sentence) || best.score >= Math.min(2, tokens.length)) {
     stance = "support";
   }
+
+  const detailIntent =
+    /\b(endpoint|api surface|route|path|pricing|price|cost|billing|plan)\b/i.test(claim.text);
+  if (stance === "support" && detailIntent) {
+    const hasConcreteEndpoint =
+      /\b(\/v\d+(?:\/[a-z0-9._-]+)+)\b/iu.test(best.sentence) ||
+      /\b([A-Z][A-Za-z0-9/-]*(?:\s+[A-Z][A-Za-z0-9/-]*)*\s+API)\b/u.test(best.sentence) ||
+      /\b(?:through|via|using)\s+the\s+[A-Za-z0-9/_ -]{3,80}[.;,]?/iu.test(best.sentence);
+    const hasConcretePricing =
+      /\$\d|\bfree\b|\bcontact sales\b|\bper (?:month|seat|user|request)\b/i.test(
+        best.sentence,
+      );
+    if (!hasConcreteEndpoint && !hasConcretePricing) {
+      return {
+        stance: "context",
+        whyMatched: `Matched the topic for "${query}", but the sentence did not include the concrete endpoint, API surface, or pricing detail needed to support the claim.`,
+      };
+    }
+  }
   return {
     stance,
     whyMatched: `Matched claim tokens [${best.matched.join(", ")}] in sentence "${best.sentence.slice(0, 180)}" from query "${query}".`,
@@ -197,19 +246,6 @@ function selectCandidates(rawResults, profile) {
   const selected = [];
   const rejected = [];
   const domainCounts = new Map();
-
-  const primaryCandidates = sorted.filter(
-    (item) =>
-      (item.score ?? 0) >= profile.minScore &&
-      primarySourceWeight(item.sourceType) > 0 &&
-      item.url,
-  );
-
-  if (primaryCandidates.length > 0) {
-    const firstPrimary = primaryCandidates[0];
-    selected.push(firstPrimary);
-    domainCounts.set(firstPrimary.domain, 1);
-  }
 
   for (const result of sorted) {
     if (selected.length >= profile.extractLimit) {

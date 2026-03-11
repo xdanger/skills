@@ -1,6 +1,5 @@
 import {
   claimLinkForEvidence,
-  createId,
   getThreadById,
   isPrimarySource,
   isRealEvidence,
@@ -37,11 +36,53 @@ const CLAIM_STOP_WORDS = new Set([
   "evidence",
 ]);
 
+const CLAIM_ENTITY_STOP_WORDS = new Set([
+  ...CLAIM_STOP_WORDS,
+  "answer",
+  "question",
+  "concrete",
+  "detail",
+  "details",
+  "pricing",
+  "price",
+  "cost",
+  "billing",
+  "plan",
+  "plans",
+  "endpoint",
+  "surface",
+  "route",
+  "path",
+  "mechanism",
+  "documented",
+  "documentation",
+  "docs",
+  "guide",
+  "guides",
+  "support",
+  "supports",
+  "available",
+  "availability",
+  "research",
+  "deep",
+  "official",
+  "sources",
+  "name",
+]);
+
 const QUALITY_ORDER = {
   high: 3,
   medium: 2,
   low: 1,
 };
+
+function domainFromUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./u, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
 
 function claimTokens(text) {
   return String(text)
@@ -53,34 +94,86 @@ function claimTokens(text) {
 
 function sentenceSplit(text) {
   return String(text)
+    .replace(/```[\s\S]*?```/gu, " ")
+    .replace(/`+/gu, " ")
+    .replace(/\[[^\]]+\]\([^)]+\)/gu, " ")
     .replace(/\s+/gu, " ")
     .split(/(?<=[.!?])\s+/u)
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
+function truncateText(text, maxLength = 220) {
+  const value = String(text).trim();
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3).trim()}...`;
+}
+
 function bestSentenceForClaim(claimText, excerpt) {
   const sentences = sentenceSplit(excerpt);
   if (sentences.length === 0) {
-    return String(excerpt).replace(/\s+/gu, " ").trim().slice(0, 220);
+    return truncateText(String(excerpt).replace(/\s+/gu, " ").trim());
   }
 
   const tokens = claimTokens(claimText);
   const ranked = sentences
     .map((sentence) => ({
       sentence,
-      score: tokens.reduce((count, token) => count + Number(sentence.toLowerCase().includes(token)), 0),
+      score: tokens.reduce(
+        (count, token) => count + Number(sentence.toLowerCase().includes(token)),
+        0,
+      ),
     }))
     .sort((left, right) => right.score - left.score);
-  return ranked[0]?.sentence ?? sentences[0];
+  return truncateText(ranked[0]?.sentence ?? sentences[0]);
 }
 
-function evidenceRank(item) {
-  return (QUALITY_ORDER[item.quality] ?? 0) * 100 + (isPrimarySource(item.source_type) ? 10 : 0);
+function salientClaimTokens(claimText) {
+  return claimTokens(claimText).filter((token) => !CLAIM_ENTITY_STOP_WORDS.has(token));
 }
 
-function sortEvidence(items) {
-  return [...items].sort((left, right) => evidenceRank(right) - evidenceRank(left));
+function subjectAffinityBonus(item, claimText) {
+  const host = domainFromUrl(item.url);
+  const title = String(item.title).toLowerCase();
+  return salientClaimTokens(claimText).reduce((bonus, token) => {
+    if (token.length < 4) {
+      return bonus;
+    }
+    if (host === token || host.startsWith(`${token}.`) || host.includes(`.${token}.`)) {
+      return bonus + 18;
+    }
+    if (title.includes(token)) {
+      return bonus + 2;
+    }
+    return bonus;
+  }, 0);
+}
+
+function evidenceRank(item, claimText) {
+  const text = `${item.title} ${item.url}`.toLowerCase();
+  let specificityBonus = 0;
+  if (/\bapi\b/.test(String(claimText).toLowerCase())) {
+    if (/(developers?\.)|(\/api\/)|(\bapi reference\b)|(\bapi docs\b)/.test(text)) {
+      specificityBonus += 8;
+    }
+    if (/\bhelp center\b/.test(text)) {
+      specificityBonus -= 2;
+    }
+  }
+  return (
+    (QUALITY_ORDER[item.quality] ?? 0) * 100 +
+    (isPrimarySource(item.source_type) ? 10 : 0) +
+    specificityBonus +
+    subjectAffinityBonus(item, claimText)
+  );
+}
+
+function sortEvidence(items, claimText) {
+  return [...items].sort(
+    (left, right) => evidenceRank(right, claimText) - evidenceRank(left, claimText),
+  );
 }
 
 function summarizeEvidence(claim, item) {
@@ -111,12 +204,7 @@ function findingStatus(claim) {
 }
 
 function listTitles(items) {
-  return uniqueBy(
-    items
-      .map((item) => item.title)
-      .filter(Boolean),
-    (item) => item,
-  );
+  return uniqueBy(items.map((item) => item.title).filter(Boolean), (item) => item);
 }
 
 function summaryFromFinding(status, supportEvidence, opposeEvidence, contextEvidence, reason) {
@@ -127,7 +215,9 @@ function summaryFromFinding(status, supportEvidence, opposeEvidence, contextEvid
   if (status === "supported" && support) {
     const corroboration = listTitles(supportEvidence.slice(1, 3));
     const corroborationText =
-      corroboration.length > 0 ? ` Corroboration also appears in ${corroboration.join(", ")}.` : "";
+      corroboration.length > 0
+        ? ` Corroboration also appears in ${corroboration.join(", ")}.`
+        : "";
     return `Supported by ${support.title}. ${support.snippet}${corroborationText}`.trim();
   }
 
@@ -138,9 +228,7 @@ function summaryFromFinding(status, supportEvidence, opposeEvidence, contextEvid
   if (status === "mixed") {
     const supportTitle = support?.title ?? "one source";
     const opposeTitle = oppose?.title ?? "another source";
-    const supportSnippet = support?.snippet ? ` ${support.snippet}` : "";
-    const opposeSnippet = oppose?.snippet ? ` ${oppose.snippet}` : "";
-    return `Evidence is mixed: ${supportTitle} supports the point, but ${opposeTitle} contradicts it.${supportSnippet}${opposeSnippet}`.trim();
+    return `Evidence is mixed: ${supportTitle} supports the point, but ${opposeTitle} does not fully confirm it. The detail remains unresolved.`.trim();
   }
 
   if (context) {
@@ -154,13 +242,22 @@ export function buildFindings(session) {
   const findings = session.claims.map((claim) => {
     const thread = getThreadById(session, claim.thread_id);
     const supportEvidence = sortEvidence(
-      linkedClaimEvidence(session, claim.claim_id, ["support"]).filter((item) => isRealEvidence(item)),
+      linkedClaimEvidence(session, claim.claim_id, ["support"]).filter((item) =>
+        isRealEvidence(item),
+      ),
+      claim.text,
     ).map((item) => summarizeEvidence(claim, item));
     const opposeEvidence = sortEvidence(
-      linkedClaimEvidence(session, claim.claim_id, ["oppose"]).filter((item) => isRealEvidence(item)),
+      linkedClaimEvidence(session, claim.claim_id, ["oppose"]).filter((item) =>
+        isRealEvidence(item),
+      ),
+      claim.text,
     ).map((item) => summarizeEvidence(claim, item));
     const contextEvidence = sortEvidence(
-      linkedClaimEvidence(session, claim.claim_id, ["context"]).filter((item) => isRealEvidence(item)),
+      linkedClaimEvidence(session, claim.claim_id, ["context"]).filter((item) =>
+        isRealEvidence(item),
+      ),
+      claim.text,
     ).map((item) => summarizeEvidence(claim, item));
     const status = findingStatus(claim);
     const citations = uniqueBy(
@@ -174,7 +271,7 @@ export function buildFindings(session) {
       }));
 
     return {
-      finding_id: createId("finding"),
+      finding_id: `finding-${claim.claim_id}`,
       claim_id: claim.claim_id,
       thread_id: claim.thread_id,
       thread_title: thread?.title ?? "Unknown thread",

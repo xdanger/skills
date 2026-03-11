@@ -99,10 +99,11 @@ Once imported, rejoin evidence may queue follow-up claim verification work.
 Present research outputs in this order:
 
 1. Research plan
-2. Interim findings
-3. Evidence gaps
-4. Final synthesis with citations
-5. Confidence and unresolved questions
+2. Answer summary
+3. Interim findings
+4. Evidence gaps
+5. Final synthesis with citations
+6. Confidence and unresolved questions
 
 ## Routing Policy
 

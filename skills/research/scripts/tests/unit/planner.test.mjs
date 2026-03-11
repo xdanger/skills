@@ -37,3 +37,29 @@ test("Tavily Research contributes only planning artifacts", async () => {
   assert.ok(session.runs.some((run) => run.tool === "research"));
   assert.ok(session.operations.some((operation) => operation.tool === "research"));
 });
+
+test("planSession shapes verification claims around the user's actual question", async () => {
+  const session = createSession({
+    query: "Does OpenAI expose deep research in the API, and if so through which endpoint?",
+    depth: "standard",
+    domains: [],
+  });
+
+  await planSession(session, createTestRuntime(session, createFixtureAdapters()));
+
+  assert.equal(session.task_shape, "verification");
+  assert.equal(session.threads[0]?.title, "Direct answer");
+  assert.match(session.claims[0]?.text ?? "", /OpenAI exposes deep research in the API\./u);
+  assert.ok(session.claims.some((claim) => /endpoint|API surface|mechanism/u.test(claim.text)));
+  assert.ok(
+    session.threads
+      .find((thread) => thread.title === "Concrete API surface")
+      ?.subqueries.some((query) => /Responses API/u.test(query)),
+  );
+  assert.ok(
+    session.claims.every(
+      (claim) =>
+        !/there is official|primary-source evidence that can confirm/iu.test(claim.text),
+    ),
+  );
+});

@@ -1,11 +1,13 @@
 import {
   getClaimById,
   getThreadById,
+  isPrimarySource,
   isRealEvidence,
   mergeUniqueStrings,
   nextQueuedWorkItem,
   uniqueBy,
 } from "./session_schema.mjs";
+import { buildFindings } from "./findings.mjs";
 
 function confidenceLabel(score) {
   if (score >= 0.8) {
@@ -46,26 +48,205 @@ function evidenceForThread(session, thread) {
   );
 }
 
+function findingsForThread(session, threadId) {
+  return session.findings.filter((item) => item.thread_id === threadId);
+}
+
+function preferredVerificationFinding(session) {
+  const directClaim = session.claims.find(
+    (claim) => claim.priority === "high" && claim.answer_relevance === "high",
+  );
+  return (
+    session.findings.find((item) => item.claim_id === directClaim?.claim_id) ??
+    session.findings[0] ??
+    null
+  );
+}
+
+function detailVerificationFinding(session, leadFinding) {
+  const detailIntent =
+    /\b(if so|which|what|how|where)\b/i.test(session.user_query || session.goal) ||
+    /\b(endpoint|api surface|route|path|pricing|price|cost|billing|plan)\b/i.test(
+      session.user_query || session.goal,
+    );
+  if (!detailIntent) {
+    return null;
+  }
+  const statusOrder = {
+    supported: 0,
+    mixed: 1,
+    insufficient: 2,
+    rejected: 3,
+  };
+  return (
+    [...session.findings]
+      .filter(
+        (item) =>
+          item.claim_id !== leadFinding?.claim_id &&
+          /\b(endpoint|api surface|route|path|pricing|price|cost|billing|plan|details?)\b/i.test(
+            `${item.thread_title} ${item.claim_text}`,
+          ),
+      )
+      .sort((left, right) => (statusOrder[left.status] ?? 9) - (statusOrder[right.status] ?? 9))[0] ??
+    null
+  );
+}
+
+function leadEvidenceSentence(evidence, fallbackPrefix) {
+  if (!evidence) {
+    return "";
+  }
+  return `${fallbackPrefix} ${evidence.title}.`;
+}
+
+function detailPhraseFromEvidence(evidence) {
+  const snippet = String(evidence?.snippet ?? evidence?.excerpt ?? "")
+    .replace(/`+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!snippet) {
+    return "";
+  }
+  const endpointMatch = snippet.match(/\b(\/v\d+(?:\/[a-z0-9._-]+)+)\b/iu);
+  if (endpointMatch) {
+    return endpointMatch[1];
+  }
+  const namedEndpointMatch = snippet.match(
+    /\b((?:responses?|chat completions|assistants|realtime)\s+(?:api|endpoint))\b/iu,
+  );
+  if (namedEndpointMatch) {
+    const phrase = namedEndpointMatch[1].trim();
+    return phrase.replace(/\bapi\b/iu, "API").replace(/\bendpoint\b/iu, "endpoint");
+  }
+  const apiMatch = snippet.match(/\b([A-Z][A-Za-z0-9/-]*(?:\s+[A-Z][A-Za-z0-9/-]*)*\s+API)\b/u);
+  if (apiMatch) {
+    const phrase = apiMatch[1].trim();
+    const firstWord = phrase.split(/\s+/u)[0]?.toLowerCase();
+    if (!["set", "use", "open", "choose", "configure", "add", "fetch"].includes(firstWord)) {
+      return phrase;
+    }
+  }
+  const surfaceMatch = snippet.match(
+    /\b(?:through|via|using)\s+the\s+([A-Za-z0-9/_ -]{3,80})[.;,]?/iu,
+  );
+  if (surfaceMatch) {
+    return surfaceMatch[1].trim();
+  }
+  return "";
+}
+
+function detailEvidenceFromSession(session) {
+  const candidates = session.evidence
+    .filter((item) => isRealEvidence(item))
+    .map((item) => ({
+      evidence: item,
+      phrase: detailPhraseFromEvidence(item),
+    }))
+    .filter(
+      ({ evidence, phrase }) =>
+        phrase ||
+        /\b(endpoint|responses api|response api|pricing|billing|plan)\b/i.test(
+          `${evidence.title} ${evidence.excerpt}`,
+        ),
+    );
+
+  candidates.sort((left, right) => {
+    const leftScore =
+      Number(Boolean(left.phrase)) * 100 +
+      Number(isPrimarySource(left.evidence.source_type)) * 10 +
+      (left.evidence.quality === "high" ? 3 : left.evidence.quality === "medium" ? 2 : 1);
+    const rightScore =
+      Number(Boolean(right.phrase)) * 100 +
+      Number(isPrimarySource(right.evidence.source_type)) * 10 +
+      (right.evidence.quality === "high" ? 3 : right.evidence.quality === "medium" ? 2 : 1);
+    return rightScore - leftScore;
+  });
+
+  return candidates[0] ?? null;
+}
+
+function detailSentenceForFinding(session, finding) {
+  const evidence = finding?.support_evidence?.[0] ?? null;
+  const phrase = detailPhraseFromEvidence(evidence);
+  if (phrase) {
+    return `The clearest implementation detail is ${phrase}.`;
+  }
+  const fallback = detailEvidenceFromSession(session);
+  if (fallback?.phrase) {
+    return `The clearest implementation detail is ${fallback.phrase}.`;
+  }
+  if (evidence?.title) {
+    return `The clearest implementation detail comes from ${evidence.title}.`;
+  }
+  return "";
+}
+
+function detailUncertaintySentence(session, finding) {
+  const directPhrase = detailPhraseFromEvidence(finding?.support_evidence?.[0] ?? null);
+  const fallbackPhrase = detailEvidenceFromSession(session)?.phrase ?? "";
+  const phrase = directPhrase || fallbackPhrase;
+  if (finding?.status === "mixed") {
+    return phrase
+      ? `The best current implementation detail points to ${phrase}, but the endpoint evidence remains mixed.`
+      : "The concrete implementation detail remains mixed across sources.";
+  }
+  if (finding?.status === "insufficient") {
+    return phrase
+      ? `The best current implementation detail points to ${phrase}, but the endpoint evidence is still incomplete.`
+      : "The concrete implementation detail is still incomplete in the current evidence.";
+  }
+  return "";
+}
+
+function summarizeVerificationAnswer(session, finding) {
+  if (!finding) {
+    return `Not yet. Current evidence does not conclusively answer: ${session.goal}.`;
+  }
+
+  const claimText = String(finding.claim_text ?? "").trim();
+  const normalizedClaimText =
+    claimText.endsWith("?") || !claimText
+      ? `Current evidence supports a direct answer to: ${session.goal}.`
+      : claimText;
+  const support = finding.support_evidence?.[0] ?? null;
+  const oppose = finding.oppose_evidence?.[0] ?? null;
+  const caveat = finding.context_evidence?.[0] ?? null;
+  const detailFinding = detailVerificationFinding(session, finding);
+
+  if (finding.status === "supported") {
+    const detail =
+      detailFinding?.status === "supported"
+        ? detailSentenceForFinding(session, detailFinding)
+        : detailUncertaintySentence(session, detailFinding);
+    const supportSentence = leadEvidenceSentence(support, "The strongest support comes from");
+    const caveatSentence = caveat ? ` Caveat: ${caveat.title} adds useful context.` : "";
+    return `Yes. ${normalizedClaimText}${detail ? ` ${detail}` : ""} ${supportSentence}${caveatSentence}`.trim();
+  }
+  if (finding.status === "rejected") {
+    const detail = leadEvidenceSentence(oppose, "The strongest opposing evidence comes from");
+    return `No. ${normalizedClaimText} ${detail}`.trim();
+  }
+  if (finding.status === "mixed") {
+    const supportDetail = support
+      ? ` The strongest supporting detail comes from ${support.title}, which says: ${support.snippet}`
+      : "";
+    const opposeDetail = oppose
+      ? ` Conflicting evidence also appears in ${oppose.title}.`
+      : "";
+    return `Not conclusively. Evidence is mixed on whether ${session.goal}.${supportDetail}${opposeDetail}`.trim();
+  }
+  return `Not yet. Current evidence does not conclusively answer: ${session.goal}.`;
+}
+
 function threadSummary(session, thread) {
-  const claims = thread.claim_ids
-    .map((claimId) => getClaimById(session, claimId))
-    .filter(Boolean);
-  const supported = claims.filter(
-    (claim) =>
-      claim.assessment.sufficiency === "sufficient" && claim.assessment.verdict === "supported",
-  );
-  const rejected = claims.filter(
-    (claim) =>
-      claim.assessment.sufficiency === "sufficient" && claim.assessment.verdict === "rejected",
-  );
-  const mixed = claims.filter(
-    (claim) =>
-      claim.assessment.resolution_state !== "resolved" ||
-      claim.assessment.sufficiency !== "sufficient" ||
-      claim.verification.stale,
-  );
+  const findings = findingsForThread(session, thread.thread_id);
   const evidence = evidenceForThread(session, thread);
-  const citations = citationsForEvidence(evidence).slice(0, 3);
+  const citations = uniqueBy(
+    [...findings.flatMap((item) => item.citations), ...citationsForEvidence(evidence)].filter(
+      (item) => item.url,
+    ),
+    (item) => item.url,
+  ).slice(0, 3);
   const observations = observationsForThread(session, thread.thread_id)
     .slice(0, 4)
     .map((item) => ({
@@ -74,22 +255,16 @@ function threadSummary(session, thread) {
       text: item.text,
     }));
 
-  let summary = "No decisive evidence has been gathered yet.";
-  if (supported.length > 0) {
-    summary = supported.map((claim) => claim.text).join(" ");
-  }
-  if (rejected.length > 0) {
-    const rejectedSummary = rejected
-      .map((claim) => `Available evidence rejects: ${claim.text}`)
-      .join(" ");
-    summary =
-      summary === "No decisive evidence has been gathered yet."
-        ? rejectedSummary
-        : `${summary} ${rejectedSummary}`.trim();
-  }
-  if (mixed.length > 0) {
-    summary =
-      `${summary} Unresolved or stale evidence remains for ${mixed.length} claim(s).`.trim();
+  const resolvedFindings = findings.filter((item) => item.status !== "insufficient");
+  const unresolvedCount = findings.filter(
+    (item) => item.status === "mixed" || item.status === "insufficient",
+  ).length;
+  let summary =
+    resolvedFindings.length > 0
+      ? resolvedFindings.map((item) => item.summary).join(" ")
+      : "No decisive evidence has been gathered yet.";
+  if (unresolvedCount > 0) {
+    summary = `${summary} Unresolved evidence remains for ${unresolvedCount} claim(s).`.trim();
   }
 
   return {
@@ -104,16 +279,16 @@ function threadSummary(session, thread) {
 }
 
 export function synthesizeAnswer(session) {
+  session.findings = buildFindings(session);
   const threadSummaries = session.threads.map((thread) => threadSummary(session, thread));
-  const keyFindings = session.claims
-    .filter(
-      (claim) =>
-        claim.assessment.sufficiency === "sufficient" &&
-        (claim.assessment.verdict === "supported" || claim.assessment.verdict === "rejected"),
-    )
-    .map((claim) =>
-      claim.assessment.verdict === "rejected" ? `Rejected: ${claim.text}` : claim.text,
-    );
+  const leadFinding = preferredVerificationFinding(session);
+  const keyFindings = session.findings
+    .filter((item) => item.status !== "insufficient")
+    .map((item) => item.summary);
+  const orderedKeyFindings =
+    session.task_shape === "verification" && leadFinding
+      ? uniqueBy([leadFinding.summary, ...keyFindings], (item) => item)
+      : keyFindings;
   const unresolvedQuestions = mergeUniqueStrings(
     session.stop_status.remaining_gaps,
     session.claims
@@ -133,16 +308,21 @@ export function synthesizeAnswer(session) {
     citations: thread.citations,
   }));
   const citations = uniqueBy(
-    threadSummaries.flatMap((thread) => thread.citations),
+    [
+      ...(leadFinding?.citations ?? []),
+      ...threadSummaries.flatMap((thread) => thread.citations),
+    ],
     (item) => item.url,
   ).slice(0, 8);
 
   session.final_answer = {
     answer_summary:
-      keyFindings.length > 0
-        ? keyFindings.slice(0, 3).join(" ")
-        : "The session did not reach strong evidence-backed findings yet.",
-    key_findings: keyFindings,
+      session.task_shape === "verification"
+        ? summarizeVerificationAnswer(session, leadFinding)
+        : orderedKeyFindings.length > 0
+          ? orderedKeyFindings.slice(0, 2).join(" ")
+          : "The session did not reach strong evidence-backed findings yet.",
+    key_findings: orderedKeyFindings,
     thread_summaries: threadSummaries,
     synthesis_sections: synthesisSections,
     unresolved_questions: unresolvedQuestions,
@@ -191,6 +371,8 @@ export function summarizeSession(session) {
 }
 
 export function summarizeReport(session) {
+  const answerSummary =
+    session.final_answer.answer_summary || "No final synthesis available yet.";
   const planLines =
     session.threads.length > 0
       ? session.threads.map((thread) => `- ${thread.title}: ${thread.intent}`).join("\n")
@@ -224,6 +406,10 @@ export function summarizeReport(session) {
     "# Research Plan",
     "",
     planLines,
+    "",
+    "# Answer Summary",
+    "",
+    answerSummary,
     "",
     "# Interim Findings",
     "",

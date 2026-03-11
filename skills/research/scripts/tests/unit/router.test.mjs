@@ -10,8 +10,15 @@ import {
 
 test("classifyTaskShape distinguishes broad verification site and async", () => {
   assert.equal(classifyTaskShape("Research the AI coding agent landscape in 2026"), "broad");
+  assert.equal(classifyTaskShape("What are the top AI coding agents in 2026?"), "broad");
+  assert.equal(classifyTaskShape("What is OpenAI deep research?"), "broad");
+  assert.equal(classifyTaskShape("How does OpenAI deep research work?"), "broad");
   assert.equal(
     classifyTaskShape("Is product X SOC 2 certified, and what is the evidence?"),
+    "verification",
+  );
+  assert.equal(
+    classifyTaskShape("Does OpenAI expose deep research in the API, and how is it documented?"),
     "verification",
   );
   assert.equal(

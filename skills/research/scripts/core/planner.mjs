@@ -4,6 +4,7 @@ import {
   getThreadById,
   mergeUniqueStrings,
   queueWorkItem,
+  uniqueBy,
 } from "./session_schema.mjs";
 import { classifyTaskShape, normalizeGoal } from "./router.mjs";
 
@@ -189,34 +190,197 @@ function buildBroadPlan(goal) {
   };
 }
 
+function capitalizeSentence(text) {
+  const value = String(text).trim();
+  if (!value) {
+    return value;
+  }
+  return value[0].toUpperCase() + value.slice(1);
+}
+
+function ensureSentence(text) {
+  const value = String(text)
+    .trim()
+    .replace(/[.?!]+$/u, "");
+  if (!value) {
+    return value;
+  }
+  return `${capitalizeSentence(value)}.`;
+}
+
+function stripVerificationFollowUps(goal) {
+  return String(goal)
+    .replace(/,?\s+and\s+if\s+so\b.*$/iu, "")
+    .replace(/,?\s+if\s+so\b.*$/iu, "")
+    .replace(/,?\s+and\s+(what|which|how|where|when)\b.*$/iu, "")
+    .replace(/,?\s+(what|which)\s+is\s+the\s+evidence\b.*$/iu, "")
+    .trim();
+}
+
+function conjugateThirdPerson(verb) {
+  const lower = String(verb).toLowerCase();
+  if (lower === "have") {
+    return "has";
+  }
+  if (/(s|sh|ch|x|z|o)$/u.test(lower)) {
+    return `${lower}es`;
+  }
+  if (/[^aeiou]y$/u.test(lower)) {
+    return `${lower.slice(0, -1)}ies`;
+  }
+  return `${lower}s`;
+}
+
+function statementFromQuestion(goal) {
+  const clean = stripVerificationFollowUps(goal).replace(/\?+$/u, "").trim();
+  if (!clean) {
+    return ensureSentence(goal);
+  }
+
+  const doesMatch = clean.match(/^does\s+(.+?)\s+([a-z][a-z-]+)\s+(.+)$/iu);
+  if (doesMatch) {
+    const [, subject, verb, rest] = doesMatch;
+    return ensureSentence(`${subject} ${conjugateThirdPerson(verb)} ${rest}`);
+  }
+
+  const modalMatch = clean.match(
+    /^(can|could|should|would|will|did|do|has|have)\s+(.+?)\s+([a-z][a-z-]+)\s+(.+)$/iu,
+  );
+  if (modalMatch) {
+    const [, modal, subject, verb, rest] = modalMatch;
+    return ensureSentence(`${subject} ${modal.toLowerCase()} ${verb} ${rest}`);
+  }
+
+  const beMatch = clean.match(
+    /^(is|are|was|were)\s+(.+?)\s+((?:soc ?2|iso ?27001|gdpr|hipaa|fedramp|available|supported|certified|deprecated|documented|enabled|included|listed|public|private|required|free|ga|beta)\b.+)$/iu,
+  );
+  if (beMatch) {
+    const [, auxiliary, subject, predicate] = beMatch;
+    return ensureSentence(`${subject} ${auxiliary.toLowerCase()} ${predicate}`);
+  }
+
+  return ensureSentence(clean);
+}
+
+function subjectFromStatement(statement) {
+  const clean = String(statement)
+    .replace(/[.?!]+$/u, "")
+    .trim();
+  const match = clean.match(
+    /^(.+?)\s+(?:is|are|was|were|has|have|supports?|exposes?|offers?|documents?|allows?|includes?|lists?|uses?)\b/iu,
+  );
+  return match?.[1]?.trim() ?? "";
+}
+
+function endpointSubqueries(goal) {
+  const directStatement = statementFromQuestion(goal);
+  const subject = subjectFromStatement(directStatement);
+  const subjectDomainHint =
+    /^[a-z0-9-]+$/iu.test(subject) && !/\s/u.test(subject)
+      ? `site:${subject.toLowerCase().replace(/[^a-z0-9-]+/giu, "")}.com`
+      : "";
+  const focus = [
+    subject,
+    /\bdeep research\b/iu.test(goal) ? "deep research" : "",
+    /\bapi\b/iu.test(goal) ? "API" : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  if (!focus) {
+    return [`${goal} endpoint`, `${goal} official docs`, `${goal} API reference`];
+  }
+  return uniqueBy(
+    [
+      `${focus} Responses API`,
+      `${focus} endpoint`,
+      `${focus} API reference`,
+      subjectDomainHint ? `${focus} endpoint ${subjectDomainHint}` : "",
+      `${focus} official docs`,
+    ].filter(Boolean),
+    (item) => item.toLowerCase(),
+  );
+}
+
+function detailThreadForGoal(goal, directClaim) {
+  const normalizedDirectClaim = String(directClaim).replace(/[.?!]+$/u, "");
+  if (/\b(endpoint|api surface|route|path|responses api|response api)\b/iu.test(goal)) {
+    return {
+      title: "Concrete API surface",
+      intent:
+        "identify the exact endpoint, API surface, or mechanism named in official sources",
+      subqueries: endpointSubqueries(goal),
+      claim: normalizedDirectClaim
+        ? `${normalizedDirectClaim} through a documented endpoint or API surface.`
+        : `Official sources name the endpoint, API surface, or mechanism needed to answer: ${goal}.`,
+      claimType: "capability",
+    };
+  }
+
+  if (/\b(price|pricing|cost|billing|plan)\b/iu.test(goal)) {
+    return {
+      title: "Pricing details",
+      intent:
+        "identify the concrete pricing, packaging, or billing details that answer the question",
+      subqueries: [`${goal} pricing`, `${goal} official pricing`],
+      claim: `Official pricing or packaging details directly answer: ${goal}.`,
+      claimType: "comparison",
+    };
+  }
+
+  return {
+    title: "Primary documentation",
+    intent:
+      "find the official documentation or policy page that most directly answers the question",
+    subqueries: [`${goal} official documentation`, `${goal} docs`],
+    claim: `A primary or official source directly answers: ${goal}.`,
+    claimType: "documentation",
+  };
+}
+
 function buildVerificationPlan(goal) {
+  const directClaim = statementFromQuestion(goal);
+  const detailThreadPlan = detailThreadForGoal(goal, directClaim);
   const directThread = createThread(
-    "Direct verification",
-    "verify the user’s core assertion directly",
-    [`${goal} official evidence`],
+    "Direct answer",
+    "answer the user's question directly from primary or official evidence",
+    [`${goal} official evidence`, `${goal} primary source`],
+  );
+  const detailThread = createThread(
+    detailThreadPlan.title,
+    detailThreadPlan.intent,
+    detailThreadPlan.subqueries,
   );
   const caveatThread = createThread(
     "Caveats and contradictory evidence",
-    "look for exceptions, caveats, or contradictory statements",
-    [`${goal} contradictory evidence`],
+    "look for exceptions, caveats, dates, or contradictory statements",
+    [`${goal} caveats`, `${goal} contradictory evidence`],
   );
 
   const claims = [
-    createClaim(directThread.thread_id, goal, "fact", "high"),
+    createClaim(directThread.thread_id, directClaim, "fact", "high"),
+    createClaim(
+      detailThread.thread_id,
+      detailThreadPlan.claim,
+      detailThreadPlan.claimType,
+      "high",
+    ),
     createClaim(
       caveatThread.thread_id,
-      `There is official or primary-source evidence that can confirm, qualify, or reject: ${goal}.`,
+      `Important caveats, exclusions, or contradictory evidence exist for: ${goal}.`,
       "policy",
-      "high",
+      "medium",
     ),
   ];
 
   return {
-    threads: attachClaimsToThreads([directThread, caveatThread], claims),
+    threads: attachClaimsToThreads([directThread, detailThread, caveatThread], claims),
     claims,
     remainingGaps: [
-      "Does any primary source contradict or qualify the claim?",
-      "Is the evidence current enough for the user’s question?",
+      "Which official source most directly answers the user's question?",
+      "Which concrete detail would a user need to act on the answer?",
+      "Does any primary source contradict, qualify, or narrow the answer?",
+      "Is the evidence current enough for the user's question?",
     ],
   };
 }

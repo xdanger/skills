@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createSession } from "../../core/session_schema.mjs";
 import { planSession } from "../../core/planner.mjs";
-import { gatherEvidence } from "../../core/retrieval.mjs";
+import { gatherEvidence, inferQuality, inferSourceType } from "../../core/retrieval.mjs";
 import { createFixtureAdapters, createTestRuntime } from "../fixtures/provider_fixtures.mjs";
 
 test("gatherEvidence records candidate filtering and domain budgeting", async () => {
@@ -87,4 +87,49 @@ test("gatherEvidence executes more than the first subquery when fanout allows it
   await gatherEvidence(session, runtime, workItem);
 
   assert.ok(observedQueries.length > 1);
+});
+
+test("inferSourceType keeps news articles distinct from official docs", () => {
+  assert.equal(
+    inferSourceType(
+      "https://techcrunch.com/2025/02/25/why-openai-isnt-bringing-deep-research-to-its-api-just-yet/",
+      "Why OpenAI isn't bringing deep research to its API just yet",
+      "A reported article about API availability.",
+    ),
+    "news",
+  );
+  assert.equal(
+    inferSourceType(
+      "https://developers.openai.com/api/docs/guides/deep-research/",
+      "Deep research | OpenAI API",
+      "Official API guide.",
+    ),
+    "docs",
+  );
+  assert.equal(
+    inferSourceType(
+      "https://cookbook.openai.com/examples/deep_research_api/introduction_to_deep_research_api",
+      "Introduction to deep research in the OpenAI API",
+      "Official cookbook example.",
+    ),
+    "docs",
+  );
+  assert.equal(
+    inferSourceType(
+      "https://community.openai.com/t/plans-for-deep-research-tools-and-the-api/1111030",
+      "Plans for Deep Research tools and the API",
+      "Forum discussion.",
+    ),
+    "community",
+  );
+  assert.equal(
+    inferSourceType(
+      "https://cobusgreyling.substack.com/p/openai-api-deep-research",
+      "OpenAI API Deep Research",
+      "Newsletter post.",
+    ),
+    "community",
+  );
+  assert.equal(inferQuality("docs"), "high");
+  assert.equal(inferQuality("community"), "low");
 });
