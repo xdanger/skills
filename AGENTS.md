@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Personal collection of Claude Code Skills. Skills are modular packages (SKILL.md + optional scripts/references/assets) that extend agent capabilities.
 
+## Public Repository
+
+This is a public repository. Other people are welcome to use `npx skills` to add skills from here, so repository contents must be safe to share publicly.
+
+Do not include personal credentials, tokens, API keys, local filesystem paths, or any other private user-specific information in skills, scripts, references, assets, or documentation.
+
 ## Repository Layout
 
 - `skills/` — Self-authored skills
