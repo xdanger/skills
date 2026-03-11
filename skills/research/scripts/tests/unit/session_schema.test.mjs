@@ -70,3 +70,85 @@ test("nextQueuedWorkItem respects explicit work item dependencies", () => {
   parent.status = "completed";
   assert.equal(nextQueuedWorkItem(session)?.work_item_id, child.work_item_id);
 });
+
+test("upgradeSession preserves awaiting_agent_decision stage", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  session.stage = "awaiting_agent_decision";
+  session.plan_state.workflow_state = "awaiting_agent_decision";
+  session.plan_state.awaiting_agent_decision_since = new Date().toISOString();
+  session.work_items = [];
+  session.threads = [
+    {
+      thread_id: "thread-1",
+      title: "Workflow fit",
+      intent: "compare workflow fit",
+      subqueries: [],
+      claim_ids: ["claim-1"],
+      notes: "",
+      execution: {
+        gather_status: "completed",
+        verify_status: "completed",
+        gather_rounds: 1,
+        last_gathered_at: null,
+        last_verified_at: null,
+        open_claim_ids: ["claim-1"],
+        last_continuation_id: null,
+      },
+    },
+  ];
+  session.claims = [
+    {
+      claim_id: "claim-1",
+      thread_id: "thread-1",
+      text: "Vendors differ in workflow fit.",
+      priority: "high",
+      verification: {
+        status: "completed",
+        attempts: 1,
+        stale: false,
+        last_checked_at: null,
+        last_continuation_id: null,
+      },
+      assessment: {
+        verdict: "unproven",
+        sufficiency: "insufficient",
+        resolution_state: "unresolved",
+        support_evidence_ids: [],
+        oppose_evidence_ids: [],
+        context_evidence_ids: [],
+        primary_evidence_ids: [],
+        missing_dimensions: [],
+        reason: "",
+        confidence_label: "low",
+        last_evaluated_at: null,
+      },
+    },
+  ];
+
+  const upgraded = upgradeSession(JSON.parse(JSON.stringify(session)));
+
+  assert.equal(upgraded.stage, "awaiting_agent_decision");
+  assert.equal(upgraded.plan_state.workflow_state, "awaiting_agent_decision");
+  assert.ok(upgraded.plan_state.awaiting_agent_decision_since);
+});
+
+test("upgradeSession keeps terminal sessions on synthesize stage for compatibility", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  session.status = "completed";
+  session.stage = "synthesize";
+
+  const upgraded = upgradeSession(JSON.parse(JSON.stringify(session)));
+
+  assert.equal(upgraded.stage, "synthesize");
+  assert.equal(upgraded.plan_state.workflow_state, "complete");
+});

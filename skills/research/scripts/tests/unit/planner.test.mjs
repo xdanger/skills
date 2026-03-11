@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSession } from "../../core/session_schema.mjs";
-import { applyResearchPlan, planSession } from "../../core/planner.mjs";
+import { approvePendingPlan, createSession } from "../../core/session_schema.mjs";
+import { applyContinuationInstruction, applyResearchPlan, planSession } from "../../core/planner.mjs";
 import { scoreSession, updateStopStatus } from "../../core/scorer.mjs";
 import { createFixtureAdapters, createTestRuntime } from "../fixtures/provider_fixtures.mjs";
 
@@ -37,6 +37,38 @@ test("Tavily Research contributes only planning artifacts", async () => {
   assert.equal(session.evidence.length, 0);
   assert.ok(session.runs.some((run) => run.tool === "research"));
   assert.ok(session.operations.some((operation) => operation.tool === "research"));
+});
+
+test("planSession does not fall back to runtime planning when authored control is active", async () => {
+  const session = createSession({
+    query: "Research the AI coding agent landscape in 2026",
+    depth: "deep",
+    domains: [],
+  });
+  const adapters = createFixtureAdapters();
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  session.work_items = session.work_items.filter((item) => item.kind === "gather_thread");
+  session.runs = [];
+  session.operations = [];
+
+  await planSession(session, createTestRuntime(session, adapters));
+
+  assert.equal(session.threads.length, 1);
+  assert.equal(session.threads[0]?.title, "Workflow fit");
+  assert.equal(session.plan_state.control_mode, "agent_authored");
+  assert.equal(session.runs.some((run) => run.tool === "research"), false);
+  assert.equal(session.operations.some((operation) => operation.tool === "research"), false);
 });
 
 test("planSession shapes verification claims around the user's actual question", async () => {
@@ -309,6 +341,31 @@ test("applyResearchPlan can apply a structured continuation patch", () => {
     ),
   );
   assert.ok(session.continuations.at(-1)?.operations.length >= 5);
+  assert.equal(session.plan_state.control_mode, "agent_authored");
+});
+
+test("heuristic prose continuation stays in compatibility mode", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  session.plan_state.control_mode = "runtime_fallback";
+  applyContinuationInstruction(session, "Dig deeper on workflow fit");
+
+  assert.equal(session.plan_state.control_mode, "runtime_fallback");
 });
 
 test("explicit continuation gaps survive scoring updates", () => {
@@ -413,6 +470,40 @@ test("pending plan snapshots carry typed gaps", () => {
     session.plan_versions[0].gaps[0]?.recommended_next_action,
     "Check official enterprise case studies.",
   );
+});
+
+test("pending agent-authored plans do not replace the live current plan until approval", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  applyResearchPlan(session, {
+    plan_id: "plan-pending",
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Enterprise rollout",
+        intent: "inspect rollout proof points",
+        claims: [{ text: "Enterprise rollout patterns differ.", priority: "high" }],
+      },
+    ],
+  });
+
+  assert.equal(session.plan_state.current_plan_version_id, null);
+  assert.ok(session.plan_state.pending_plan_version_id);
+  assert.equal(session.plan_state.workflow_state, "pending_review");
+
+  approvePendingPlan(session);
+
+  assert.equal(
+    session.plan_state.current_plan_version_id,
+    session.plan_versions[0].plan_version_id,
+  );
+  assert.equal(session.plan_state.pending_plan_version_id, null);
+  assert.equal(session.plan_state.control_mode, "agent_authored");
 });
 
 test("applyResearchPlan can apply an agent-authored delta plan", () => {

@@ -148,7 +148,7 @@ test("open typed blockers keep the session from claiming stop", async () => {
   assert.ok(session.stop_status.remaining_gaps.includes("Need stronger enterprise proof points."));
 });
 
-test("advanceStage does not invent new work when an authored control surface exists", () => {
+test("advanceStage waits for agent judgment when authored control exists and no work remains", () => {
   const session = createSession({
     query: "Research AI coding agents",
     depth: "standard",
@@ -178,9 +178,57 @@ test("advanceStage does not invent new work when an authored control surface exi
   updateStopStatus(session);
   advanceStage(session);
 
+  assert.equal(session.stage, "awaiting_agent_decision");
   assert.equal(
     session.work_items.some((item) => item.kind === "gather_thread" || item.kind === "verify_claim"),
     false,
   );
-  assert.ok(session.work_items.some((item) => item.kind === "synthesize_session"));
+  assert.equal(session.work_items.some((item) => item.kind === "synthesize_session"), false);
+});
+
+test("advanceStage marks authored sessions as blocked when blockers remain and no work is queued", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  session.work_items = [];
+  session.gaps.push({
+    gap_id: "gap-blocked",
+    kind: "source_authority",
+    summary: "Need an official deployment source.",
+    scope_type: "session",
+    scope_id: session.session_id,
+    severity: "high",
+    status: "open",
+    recommended_next_action: "Let the agent decide whether to deepen or stop with caveats.",
+    created_by: "agent",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  applyResearchPlan(session, {
+    delta_plan: {
+      delta_plan_id: "delta-blocked",
+      summary: "Wait for the agent to resolve the blocker.",
+    },
+  });
+
+  scoreSession(session);
+  updateStopStatus(session);
+  advanceStage(session);
+
+  assert.equal(session.stage, "blocked");
+  assert.equal(session.work_items.some((item) => item.kind === "synthesize_session"), false);
 });

@@ -4,7 +4,17 @@ export const SESSION_VERSION = 6;
 export const DEFAULT_DEPTH = "standard";
 export const VALID_DEPTHS = new Set(["quick", "standard", "deep"]);
 export const VALID_REPORT_FORMATS = new Set(["md", "json"]);
-export const VALID_STAGES = new Set(["plan", "gather", "verify", "synthesize"]);
+export const VALID_STAGES = new Set([
+  "plan",
+  "pending_review",
+  "gather",
+  "verify",
+  "synthesize",
+  "awaiting_agent_decision",
+  "blocked",
+  "complete",
+  "closed",
+]);
 export const WORK_ITEM_PRIORITY = {
   plan_session: 10,
   handoff_session: 20,
@@ -146,6 +156,9 @@ function createPlanState(value = {}) {
     review_required: Boolean(value.review_required),
     current_plan_version_id: value.current_plan_version_id ?? null,
     pending_plan_version_id: value.pending_plan_version_id ?? null,
+    control_mode: value.control_mode ?? null,
+    workflow_state: value.workflow_state ?? "draft",
+    awaiting_agent_decision_since: value.awaiting_agent_decision_since ?? null,
     last_prepared_at: value.last_prepared_at ?? null,
     last_approved_at: value.last_approved_at ?? null,
   };
@@ -788,17 +801,21 @@ export function recordPlanVersion(
     remaining_gaps: remainingGaps,
   });
   session.plan_versions.push(version);
-  session.plan_state.current_plan_version_id = version.plan_version_id;
 
   if (status === "pending_approval") {
     session.plan_state.approval_status = "pending";
     session.plan_state.review_required = true;
     session.plan_state.pending_plan_version_id = version.plan_version_id;
+    session.plan_state.workflow_state = "pending_review";
     session.plan_state.last_prepared_at = version.created_at;
   } else {
+    session.plan_state.current_plan_version_id = version.plan_version_id;
     session.plan_state.approval_status = "approved";
     session.plan_state.review_required = false;
     session.plan_state.pending_plan_version_id = null;
+    session.plan_state.control_mode = source === "agent_authored" ? "agent_authored" : "runtime_fallback";
+    session.plan_state.workflow_state = "executing";
+    session.plan_state.awaiting_agent_decision_since = null;
     session.plan_state.last_approved_at = version.approved_at ?? version.created_at;
   }
 
@@ -848,6 +865,10 @@ export function approvePendingPlan(session) {
   session.plan_state.review_required = false;
   session.plan_state.pending_plan_version_id = null;
   session.plan_state.current_plan_version_id = version.plan_version_id;
+  session.plan_state.control_mode =
+    version.source === "agent_authored" ? "agent_authored" : "runtime_fallback";
+  session.plan_state.workflow_state = "executing";
+  session.plan_state.awaiting_agent_decision_since = null;
   session.plan_state.last_approved_at = version.approved_at;
   appendActivity(session, "plan_approved", "Approved the pending research plan.", {
     plan_version_id: version.plan_version_id,
@@ -1108,6 +1129,12 @@ function createInitialWorkItems(session) {
   if (session.status === "completed" || session.status === "closed") {
     return [];
   }
+  if (session.stage === "awaiting_agent_decision" || session.stage === "blocked") {
+    return [];
+  }
+  if (session.plan_state?.approval_status === "pending") {
+    return [];
+  }
   if (session.handoff?.state === "rejoin_pending" && session.handoff.pending_rejoin_payload) {
     return [
       createWorkItem({
@@ -1242,11 +1269,28 @@ export function refreshThreadExecutionState(session) {
 }
 
 export function syncSessionStage(session) {
+  if (session.status === "closed") {
+    session.stage = "closed";
+    session.plan_state.workflow_state = "closed";
+    return session.stage;
+  }
+  if (session.status === "completed") {
+    session.stage = "synthesize";
+    session.plan_state.workflow_state = "complete";
+    return session.stage;
+  }
+  if (session.plan_state?.approval_status === "pending") {
+    session.stage = "pending_review";
+    session.plan_state.workflow_state = "pending_review";
+    return session.stage;
+  }
+
   const queuedOrRunning = session.work_items.filter(
     (item) => item.status === "queued" || item.status === "in_progress",
   );
   if (queuedOrRunning.some((item) => item.kind === "plan_session")) {
     session.stage = "plan";
+    session.plan_state.workflow_state = "draft";
     return session.stage;
   }
   if (
@@ -1255,6 +1299,8 @@ export function syncSessionStage(session) {
     )
   ) {
     session.stage = "gather";
+    session.plan_state.workflow_state = "executing";
+    session.plan_state.awaiting_agent_decision_since = null;
     return session.stage;
   }
   if (
@@ -1263,21 +1309,34 @@ export function syncSessionStage(session) {
     )
   ) {
     session.stage = "verify";
+    session.plan_state.workflow_state = "executing";
+    session.plan_state.awaiting_agent_decision_since = null;
     return session.stage;
   }
   if (queuedOrRunning.some((item) => item.kind === "synthesize_session")) {
     session.stage = "synthesize";
+    session.plan_state.workflow_state = "synthesizing";
+    session.plan_state.awaiting_agent_decision_since = null;
     return session.stage;
   }
-  if (session.status === "completed") {
-    session.stage = "synthesize";
+  if (session.stage === "awaiting_agent_decision" || session.stage === "blocked") {
+    session.plan_state.workflow_state = session.stage;
+    if (
+      session.stage === "awaiting_agent_decision" &&
+      !session.plan_state.awaiting_agent_decision_since
+    ) {
+      session.plan_state.awaiting_agent_decision_since = isoNow();
+    }
     return session.stage;
   }
   if (session.threads.length === 0) {
     session.stage = "plan";
+    session.plan_state.workflow_state = "draft";
     return session.stage;
   }
   session.stage = "gather";
+  session.plan_state.workflow_state = "executing";
+  session.plan_state.awaiting_agent_decision_since = null;
   return session.stage;
 }
 

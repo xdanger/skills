@@ -80,6 +80,31 @@ test("CLI accepts an agent-authored plan file on start", async () => {
   });
 });
 
+test("CLI accepts an agent-authored brief file on start", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "research-brief-"));
+  const briefFile = join(tempDir, "brief.json");
+  writeFileSync(
+    briefFile,
+    JSON.stringify({
+      objective: "Compare AI coding agents for enterprise adoption",
+      deliverable: "report",
+      source_policy: {
+        mode: "allowlist",
+        allow_domains: ["openai.com"],
+      },
+    }),
+  );
+
+  await assert.doesNotReject(async () => {
+    await withMutedStdout(async () => {
+      await main(
+        ["start", "--query", "Research AI coding agents", "--brief-file", briefFile],
+        createFixtureAdapters(),
+      );
+    });
+  });
+});
+
 test("waiting_remote sessions reopen for continuation", () => {
   const session = createSession({
     query: "Research this market and deliver a CSV with top vendors",
@@ -217,6 +242,8 @@ test("pending approval sessions do not execute queued work", async () => {
 
   assert.equal(session.work_items[0]?.status, "completed");
   assert.equal(session.stop_status.decision, "review");
+  assert.equal(session.stage, "pending_review");
+  assert.equal(session.plan_state.workflow_state, "pending_review");
   assert.equal(session.plan_state.pending_plan_version_id !== null, true);
 
   approvePendingPlan(session);
@@ -242,6 +269,22 @@ test("approve command resumes a prepared session", async () => {
   const updated = loadSession(session.session_id);
   assert.equal(updated.plan_state.approval_status, "approved");
   assert.ok(updated.work_items.some((item) => item.kind === "gather_thread"));
+});
+
+test("review command returns an agent-facing review packet", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  await assert.doesNotReject(async () => {
+    await withMutedStdout(async () => {
+      await main(["review", "--session-id", session.session_id], createFixtureAdapters());
+    });
+  });
 });
 
 test("approved agent-authored pending plans survive resume", async () => {
@@ -274,6 +317,7 @@ test("approved agent-authored pending plans survive resume", async () => {
   await runOrchestrator(session, createFixtureAdapters(), 6);
 
   assert.equal(session.stop_status.decision, "review");
+  assert.equal(session.stage, "pending_review");
   assert.ok(session.threads.some((thread) => thread.title === "Enterprise rollout"));
 
   approvePendingPlan(session);
@@ -281,6 +325,7 @@ test("approved agent-authored pending plans survive resume", async () => {
 
   assert.ok(session.threads.some((thread) => thread.title === "Enterprise rollout"));
   assert.ok(session.work_items.some((item) => item.kind === "gather_thread"));
+  assert.equal(session.plan_state.control_mode, "agent_authored");
 });
 
 test("continue is blocked while a plan approval is pending", async () => {
@@ -428,6 +473,37 @@ test("continue can apply an agent-authored delta plan file", async () => {
   assert.equal(updated.delta_plans.length, 1);
   assert.equal(updated.delta_plans[0]?.delta_plan_id, "delta-cli-1");
   assert.ok(updated.gaps.some((gap) => gap.summary === "Need fresher pricing evidence."));
+});
+
+test("continue accepts an explicit delta file", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  const targetThread = session.threads[0];
+  const tempDir = mkdtempSync(join(tmpdir(), "research-delta-file-"));
+  const deltaFile = join(tempDir, "delta-only.json");
+  writeFileSync(
+    deltaFile,
+    JSON.stringify({
+      delta_plan_id: "delta-cli-2",
+      summary: "Queue one more gather pass explicitly.",
+      thread_actions: [{ action: "deepen", thread_id: targetThread.thread_id }],
+    }),
+  );
+
+  await withMutedStdout(async () => {
+    await main(
+      ["continue", "--session-id", session.session_id, "--delta-file", deltaFile],
+      createFixtureAdapters(),
+    );
+  });
+
+  const updated = loadSession(session.session_id);
+  assert.equal(updated.delta_plans.at(-1)?.delta_plan_id, "delta-cli-2");
 });
 
 test("delta plans are blocked while a plan approval is pending", async () => {

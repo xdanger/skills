@@ -403,6 +403,8 @@ export function summarizeSession(session) {
     goal: session.goal,
     research_brief: session.research_brief,
     plan_state: session.plan_state,
+    workflow_state: session.plan_state?.workflow_state ?? null,
+    control_mode: session.plan_state?.control_mode ?? null,
     current_plan: currentPlanSummary(session),
     pending_plan: pendingPlanSummary(session),
     latest_delta_plan: latestDeltaPlanSummary(session),
@@ -431,6 +433,50 @@ export function summarizeSession(session) {
       .map((item) => item.summary),
     recent_activity: session.activity_history.slice(-5),
     updated_at: session.updated_at,
+  };
+}
+
+export function reviewSessionPacket(session) {
+  const openGaps = activeGaps(session);
+  const unresolvedContradictions = session.contradictions.filter((item) => item.status === "open");
+  const latestEvidence = [...session.evidence]
+    .filter((item) => item.url)
+    .slice(-5)
+    .map((item) => ({
+      evidence_id: item.evidence_id,
+      title: item.title,
+      url: item.url,
+      quality: item.quality,
+      source_type: item.source_type,
+      published_at: item.published_at,
+    }));
+  const recentFindings = session.findings.slice(-5).map((item) => ({
+    finding_id: item.finding_id,
+    claim_id: item.claim_id,
+    status: item.status,
+    summary: item.summary,
+    confidence_label: item.confidence_label,
+  }));
+
+  return {
+    session_id: session.session_id,
+    stage: session.stage,
+    workflow_state: session.plan_state?.workflow_state ?? null,
+    control_mode: session.plan_state?.control_mode ?? null,
+    research_brief: session.research_brief,
+    current_plan: currentPlanSummary(session),
+    pending_plan: pendingPlanSummary(session),
+    latest_delta_plan: latestDeltaPlanSummary(session),
+    open_blockers: openGaps,
+    unresolved_contradictions: unresolvedContradictions.map((item) => ({
+      contradiction_id: item.contradiction_id ?? null,
+      summary: item.summary,
+      status: item.status,
+    })),
+    recent_findings: recentFindings,
+    recent_evidence: latestEvidence,
+    recent_activity: session.activity_history.slice(-8),
+    stop_status: session.stop_status,
   };
 }
 
@@ -483,6 +529,8 @@ export function summarizeReport(session) {
     "",
     `Approval status: ${session.plan_state?.approval_status ?? "approved"}`,
     `Review required: ${session.plan_state?.review_required ? "yes" : "no"}`,
+    `Workflow state: ${session.plan_state?.workflow_state ?? "draft"}`,
+    `Control mode: ${session.plan_state?.control_mode ?? "none"}`,
     currentPlan ? `Current plan: ${currentPlan.summary || currentPlan.plan_version_id}` : "Current plan: none",
     pendingPlan ? `Pending plan: ${pendingPlan.summary || pendingPlan.plan_version_id}` : "Pending plan: none",
     latestDeltaPlan

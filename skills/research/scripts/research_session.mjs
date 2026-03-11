@@ -31,6 +31,7 @@ import { createDefaultAdapters } from "./core/providers.mjs";
 import {
   applyContinuationInstruction,
   applyResearchPlan,
+  mergeResearchBrief,
   planSession,
 } from "./core/planner.mjs";
 import { gatherEvidence, recordEvidenceStructures } from "./core/retrieval.mjs";
@@ -42,6 +43,7 @@ import {
   updateStopStatus,
 } from "./core/scorer.mjs";
 import {
+  reviewSessionPacket,
   sourcesForSession,
   summarizeReport,
   summarizeSession,
@@ -107,6 +109,12 @@ function parseArgs(argv) {
         break;
       case "--plan-file":
         options.planFile = rest[++index];
+        break;
+      case "--brief-file":
+        options.briefFile = rest[++index];
+        break;
+      case "--delta-file":
+        options.deltaFile = rest[++index];
         break;
       default:
         fail(`Unknown argument: ${arg}`);
@@ -399,6 +407,7 @@ export async function runOrchestrator(
         open_claim_ids: session.stop_status?.open_claim_ids ?? [],
         remaining_gaps: session.stop_status?.remaining_gaps ?? [],
       };
+      syncSessionStage(session);
       break;
     }
 
@@ -460,6 +469,10 @@ async function cmdStart(args, adapters) {
     depth: args.depth,
     domains: args.domains,
   });
+  if (args.briefFile) {
+    const brief = JSON.parse(readFileSync(args.briefFile, "utf8"));
+    mergeResearchBrief(session, brief.research_brief ?? brief);
+  }
   if (args.planFile) {
     const plan = JSON.parse(readFileSync(args.planFile, "utf8"));
     applyResearchPlan(session, plan, { mode: "replace" });
@@ -475,6 +488,10 @@ async function cmdPrepare(args, adapters) {
     domains: args.domains,
     approvalMode: "pending",
   });
+  if (args.briefFile) {
+    const brief = JSON.parse(readFileSync(args.briefFile, "utf8"));
+    mergeResearchBrief(session, brief.research_brief ?? brief);
+  }
   if (args.planFile) {
     const plan = JSON.parse(readFileSync(args.planFile, "utf8"));
     applyResearchPlan(session, plan, { mode: "replace" });
@@ -486,6 +503,11 @@ async function cmdPrepare(args, adapters) {
 function cmdStatus(args) {
   const session = loadSession(args.sessionId);
   printJson(summarizeSession(session));
+}
+
+function cmdReview(args) {
+  const session = loadSession(args.sessionId);
+  printJson(reviewSessionPacket(session));
 }
 
 async function cmdContinue(args, adapters) {
@@ -504,6 +526,14 @@ async function cmdContinue(args, adapters) {
   if (args.planFile) {
     const plan = JSON.parse(readFileSync(args.planFile, "utf8"));
     applyResearchPlan(session, plan, { mode: "append" });
+  }
+  if (args.deltaFile) {
+    const delta = JSON.parse(readFileSync(args.deltaFile, "utf8"));
+    applyResearchPlan(
+      session,
+      delta.delta_plan ? delta : { delta_plan: delta },
+      { mode: "append" },
+    );
   }
   reopenSessionForContinuation(session, instruction || "agent-authored follow-up plan");
   await runOrchestrator(session, adapters);
@@ -564,9 +594,17 @@ export async function main(argv = process.argv.slice(2), adapters = createDefaul
   ensureStateDir();
   const args = parseArgs(argv);
   if (
-    ["status", "continue", "approve", "report", "sources", "rejoin", "close", "delete"].includes(
-      args.command,
-    ) &&
+    [
+      "status",
+      "review",
+      "continue",
+      "approve",
+      "report",
+      "sources",
+      "rejoin",
+      "close",
+      "delete",
+    ].includes(args.command) &&
     !args.sessionId
   ) {
     fail("--session-id is required");
@@ -574,8 +612,8 @@ export async function main(argv = process.argv.slice(2), adapters = createDefaul
   if (["start", "prepare"].includes(args.command) && !args.query) {
     fail("--query is required");
   }
-  if (args.command === "continue" && !args.instruction && !args.planFile) {
-    fail("--instruction or --plan-file is required");
+  if (args.command === "continue" && !args.instruction && !args.planFile && !args.deltaFile) {
+    fail("--instruction, --plan-file, or --delta-file is required");
   }
 
   switch (args.command) {
@@ -587,6 +625,9 @@ export async function main(argv = process.argv.slice(2), adapters = createDefaul
       break;
     case "status":
       cmdStatus(args);
+      break;
+    case "review":
+      cmdReview(args);
       break;
     case "continue":
       await cmdContinue(args, adapters);

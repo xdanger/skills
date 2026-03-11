@@ -54,7 +54,8 @@ function hasAuthoredControlSurface(session) {
     (item) => item.plan_version_id === session.plan_state?.current_plan_version_id,
   );
   return Boolean(
-    ensureArray(session.delta_plans).length > 0 || currentPlan?.source === "agent_authored",
+    session.plan_state?.control_mode === "agent_authored" ||
+      currentPlan?.source === "agent_authored",
   );
 }
 
@@ -214,12 +215,14 @@ export function updateStopStatus(session) {
 export function advanceStage(session) {
   refreshThreadExecutionState(session);
   updateStopStatus(session);
+  const authoredControl = hasAuthoredControlSurface(session);
+  const openGaps = activeGaps(session);
 
   if (session.handoff?.state === "submitted" && session.status === "waiting_remote") {
     return syncSessionStage(session);
   }
 
-  if (!hasAuthoredControlSurface(session)) {
+  if (!authoredControl) {
     const profile = depthProfile(session.constraints.depth);
     for (const claim of getHighPriorityClaims(session)) {
       const thread = getThreadById(session, claim.thread_id);
@@ -268,6 +271,12 @@ export function advanceStage(session) {
       scopeId: session.session_id,
       reason: session.stop_status.reason,
     });
+  } else if (
+    authoredControl &&
+    !hasNonSynthesisWork &&
+    !hasQueuedWork(session, "synthesize_session", session.session_id)
+  ) {
+    session.stage = openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
   } else if (
     !hasNonSynthesisWork &&
     !hasQueuedWork(session, "synthesize_session", session.session_id)
