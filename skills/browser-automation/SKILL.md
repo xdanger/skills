@@ -136,8 +136,10 @@ site-specific flow requires it.
 
 Read these only when needed:
 
-- For general browser workflows, auth, sessions, refs, and screenshots, read `/Users/xdanger/.dotfiles/agents/skills/agent-browser/SKILL.md`.
-- For request mocking, tracing, network inspection, and Playwright-specific debugging, read `/Users/xdanger/.dotfiles/agents/skills/playwright-cli/SKILL.md`.
+- For general browser workflows, auth, sessions, refs, and screenshots, read the upstream `agent-browser` skill:
+  `https://github.com/vercel-labs/agent-browser/blob/main/skills/agent-browser/SKILL.md`
+- For request mocking, tracing, network inspection, and Playwright-specific debugging, read the upstream `playwright-cli` skill:
+  `https://github.com/microsoft/playwright-cli/blob/main/skills/playwright-cli/SKILL.md`
 - For local routing rules and session guidance, read `references/tool-selection.md` and `references/session-auth.md`.
 
 Load references only when needed. Keep the default path light.
