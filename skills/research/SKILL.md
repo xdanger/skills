@@ -50,29 +50,38 @@ Useful flags:
 Use `prepare` when the agent wants a reviewable plan snapshot before automatic gathering starts.
 Use `approve` when a prepared plan should resume normal orchestration.
 
-## Default Loop
+## Operating Model
 
-Think in this loop:
+The agent decides what to research. The runtime makes sure decisions are durable and replayable.
 
-1. plan
-2. gather
-3. verify
-4. synthesize
+Default loop:
+
+1. plan — the agent authors the research shape
+2. gather — the runtime collects evidence safely
+3. verify — the runtime cross-checks claims
+4. synthesize — the runtime produces the output
 
 Treat the session as durable state. Do not restart from scratch just because the user asks to go deeper.
 
-## Prefer Agent-Authored Planning
+When the runtime has no authored next step, it enters `awaiting_agent_decision` instead of
+inventing its own plan. The agent should respond with a `--plan-file` or `--delta-file`.
 
-If the task is high-value, ambiguous, or clearly needs custom decomposition, prefer `--plan-file`.
+## Agent-Authored Planning (Primary Path)
 
-Use agent-authored planning when you already know:
+Always prefer `--plan-file` or `--brief-file` for non-trivial research. The runtime has a
+fallback planner for simple queries, but it is low-authority and should not be relied on for
+high-value work.
+
+Author a plan when you know:
 
 - which threads matter
 - which claims are answer-bearing
 - which subqueries are worth paying for
 - which gaps should stay explicit
 
-The runtime validates and queues the plan. It should not try to out-think the agent.
+The runtime validates, persists, and queues the plan. It does not try to out-think the agent.
+When the runtime uses its fallback planner, it tags the output as `source: "runtime_fallback"`
+with `authority: "low"`.
 
 Minimal plan shape:
 
@@ -117,7 +126,8 @@ You can also include a lightweight `research_brief` so the agent owns more of th
 
 If a plan may be retried, include a stable `plan_id` so duplicate application can be skipped safely.
 
-Use fallback planning only when custom planning would be overkill.
+Use fallback planning only when the query is simple enough that custom planning would be overkill.
+The fallback planner is a compatibility layer, not the system's brain.
 
 ## Continuation
 
@@ -130,8 +140,9 @@ Treat `continue` as a durable mutation of the same session.
 
 Do not wipe the ledger because the user said “continue.”
 
-When the next step is already clear, prefer a machine-readable continuation patch instead of
-forcing the runtime to infer intent from prose.
+When the next step is already clear, always prefer a machine-readable continuation patch or
+delta plan. Prose instructions (`--instruction`) go through a legacy inference layer that
+guesses intent from text — it works for simple cases but should not be the primary path.
 
 Minimal continuation patch shape:
 
@@ -278,8 +289,9 @@ Queue proposals must reference a valid existing target:
 
 - Treat Tavily Research as planning help, not evidence.
 - Only URL-backed evidence should move claim state or confidence.
-- Keep contradictions explicit.
+- Keep contradictions explicit — they are durable typed objects, not just text.
 - If source quality is weak or one claim depends on one thin source, keep it unresolved.
+- Evidence carries freshness metadata: `observed_at` (when we saw it) and `last_verified_at`.
 - Preserve attribution anchors with the evidence when possible:
   `anchor_text`, `matched_sentence`, `excerpt_method`, and `attribution_confidence`.
 - Surface those attribution fields in findings, source listings, or other agent-facing evidence
@@ -287,7 +299,11 @@ Queue proposals must reference a valid existing target:
 - Treat attribution as best-effort support metadata, not as proof that the runtime fully
   understands the source.
 
-The session ledger now also persists a lightweight control plane:
+Contradictions are structured objects with `conflict_type` (factual_disagreement, temporal,
+interpretation, scope), `resolution_strategy`, and `status` (open, resolved, dismissed).
+They survive across sessions and are visible in reports and review packets.
+
+The session ledger persists a control plane:
 
 - `research_brief`
 - `plan_state`
@@ -295,6 +311,7 @@ The session ledger now also persists a lightweight control plane:
 - `delta_plans`
 - `activity_history`
 - `gaps`
+- `contradictions`
 
 ## Routing
 
@@ -346,8 +363,9 @@ Present outputs in this order:
 2. answer summary
 3. interim findings
 4. evidence gaps
-5. final synthesis with citations
-6. confidence and unresolved questions
+5. open contradictions
+6. final synthesis with citations
+7. confidence and unresolved questions
 
 ## Stop When
 

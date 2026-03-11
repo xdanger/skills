@@ -78,11 +78,28 @@ Make those fields visible in the outputs another agent is likely to consume, not
 session state. Findings and source listings should preserve the best available attribution anchor
 for each claim/source pair.
 
+## Evidence Freshness
+
+Evidence records carry freshness metadata:
+
+- `observed_at`: when the runtime first saw this evidence
+- `published_at`: publication date from the source (if available)
+- `last_verified_at`: when the evidence was last cross-checked
+
 ## Contradictions
+
+Contradictions are durable typed objects, not just text strings. Each contradiction records:
+
+- `contradiction_id`: stable identifier
+- `claim_id`: which claim is contested
+- `left_evidence_id` / `right_evidence_id`: the conflicting sources
+- `conflict_type`: `factual_disagreement`, `temporal`, `interpretation`, or `scope`
+- `status`: `open`, `resolved`, or `dismissed`
+- `resolution_strategy`: what the agent should try next
 
 When two sources disagree:
 
-1. Record the contradiction explicitly.
+1. Record the contradiction as a typed object.
 2. Search for a tie-breaker source that is more primary or more recent.
 3. If the conflict remains, lower confidence instead of forcing a conclusion.
 
