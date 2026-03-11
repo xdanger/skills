@@ -414,3 +414,212 @@ test("pending plan snapshots carry typed gaps", () => {
     "Check official enterprise case studies.",
   );
 });
+
+test("applyResearchPlan can apply an agent-authored delta plan", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  const existingThread = session.threads[0];
+  const existingClaim = session.claims[0];
+
+  applyResearchPlan(session, {
+    delta_plan: {
+      delta_plan_id: "delta-1",
+      summary: "Workflow fit is stable, but we need fresher pricing evidence next.",
+      goal_update: "Research AI coding agents for enterprise adoption and pricing clarity",
+      source_policy_update: {
+        mode: "allowlist",
+        allow_domains: ["openai.com"],
+        preferred_domains: ["developers.openai.com"],
+      },
+      gap_updates: [
+        {
+          action: "upsert",
+          gap: {
+            kind: "freshness",
+            summary: "Need fresher pricing evidence.",
+            scope_type: "thread",
+            scope_id: existingThread.thread_id,
+            severity: "high",
+          },
+        },
+      ],
+      thread_actions: [
+        {
+          action: "deepen",
+          thread_id: existingThread.thread_id,
+          reason: "Gather one more pass for pricing and packaging.",
+        },
+      ],
+      claim_actions: [
+        {
+          action: "mark_stale",
+          claim_id: existingClaim.claim_id,
+          reason: "Pricing evidence has likely shifted.",
+        },
+        {
+          action: "set_priority",
+          claim_id: existingClaim.claim_id,
+          priority: "high",
+        },
+      ],
+      queue_proposals: [
+        {
+          kind: "synthesize_session",
+          scope_type: "session",
+          scope_id: session.session_id,
+          reason: "Produce an updated interim synthesis after the next pass.",
+        },
+      ],
+      why_now: "The blocker surface changed and the next step should be explicit.",
+    },
+  });
+
+  assert.equal(session.delta_plans.length, 1);
+  assert.equal(session.goal, "Research AI coding agents for enterprise adoption and pricing clarity");
+  assert.ok(session.research_brief.source_policy.allow_domains.includes("openai.com"));
+  assert.ok(session.gaps.some((gap) => gap.summary === "Need fresher pricing evidence."));
+  assert.equal(existingClaim.verification.stale, true);
+  assert.ok(
+    session.work_items.some(
+      (item) => item.kind === "gather_thread" && item.scope_id === existingThread.thread_id,
+    ),
+  );
+  assert.ok(
+    session.work_items.some(
+      (item) => item.kind === "synthesize_session" && item.scope_id === session.session_id,
+    ),
+  );
+});
+
+test("applyResearchPlan skips duplicate delta plan ids", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  const existingThread = session.threads[0];
+  const deltaPlan = {
+    delta_plan: {
+      delta_plan_id: "delta-dup",
+      summary: "Deeper workflow pass needed.",
+      thread_actions: [{ action: "deepen", thread_id: existingThread.thread_id }],
+    },
+  };
+
+  applyResearchPlan(session, deltaPlan);
+  const workCount = session.work_items.length;
+  applyResearchPlan(session, deltaPlan);
+
+  assert.equal(session.delta_plans.length, 1);
+  assert.equal(session.work_items.length, workCount);
+  assert.equal(
+    session.decision_log.filter((item) => item.action === "delta_plan_skip").length,
+    1,
+  );
+});
+
+test("delta plan pause suppresses already queued gather work for the thread", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  const existingThread = session.threads[0];
+
+  applyResearchPlan(session, {
+    delta_plan: {
+      delta_plan_id: "delta-pause",
+      summary: "Pause this thread until the agent resolves the blocker.",
+      thread_actions: [
+        {
+          action: "pause",
+          thread_id: existingThread.thread_id,
+          reason: "Block this thread pending user clarification.",
+        },
+      ],
+    },
+  });
+
+  assert.equal(existingThread.execution.gather_status, "blocked");
+  assert.ok(
+    session.work_items
+      .filter((item) => item.kind === "gather_thread" && item.scope_id === existingThread.thread_id)
+      .every((item) => item.status !== "queued"),
+  );
+});
+
+test("delta plan rejects queue proposals that reference missing targets", () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+
+  applyResearchPlan(session, {
+    task_shape: "broad",
+    threads: [
+      {
+        title: "Workflow fit",
+        intent: "compare workflow fit",
+        claims: [{ text: "Vendors differ in workflow fit.", priority: "high" }],
+      },
+    ],
+  });
+
+  assert.throws(
+    () =>
+      applyResearchPlan(session, {
+        delta_plan: {
+          delta_plan_id: "delta-invalid-queue",
+          summary: "This proposal should fail validation.",
+          queue_proposals: [
+            {
+              kind: "verify_claim",
+              scope_type: "claim",
+              scope_id: "claim-missing",
+            },
+          ],
+        },
+      }),
+    /missing claim/u,
+  );
+});

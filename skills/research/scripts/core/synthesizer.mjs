@@ -1,4 +1,5 @@
 import {
+  activeGaps,
   getClaimById,
   getThreadById,
   isPrimarySource,
@@ -64,6 +65,24 @@ function pendingPlanSummary(session) {
       (item) => item.plan_version_id === session.plan_state?.pending_plan_version_id,
     ) ?? null,
   );
+}
+
+function latestDeltaPlanSummary(session) {
+  const latest = Array.isArray(session.delta_plans) ? session.delta_plans.at(-1) : null;
+  if (!latest) {
+    return null;
+  }
+  return {
+    delta_plan_id: latest.delta_plan_id,
+    summary: latest.summary,
+    what_changed: latest.what_changed,
+    why_now: latest.why_now,
+    gap_update_count: Array.isArray(latest.gap_updates) ? latest.gap_updates.length : 0,
+    thread_action_count: Array.isArray(latest.thread_actions) ? latest.thread_actions.length : 0,
+    claim_action_count: Array.isArray(latest.claim_actions) ? latest.claim_actions.length : 0,
+    queue_proposal_count: Array.isArray(latest.queue_proposals) ? latest.queue_proposals.length : 0,
+    applied_at: latest.applied_at,
+  };
 }
 
 function observationsForThread(session, threadId) {
@@ -374,9 +393,7 @@ export function synthesizeAnswer(session) {
 
 export function summarizeSession(session) {
   const activeWorkItem = nextQueuedWorkItem(session);
-  const openGaps = Array.isArray(session.gaps)
-    ? session.gaps.filter((gap) => gap.status !== "resolved" && gap.status !== "closed")
-    : [];
+  const openGaps = activeGaps(session);
   return {
     session_id: session.session_id,
     session_version: session.session_version,
@@ -388,6 +405,7 @@ export function summarizeSession(session) {
     plan_state: session.plan_state,
     current_plan: currentPlanSummary(session),
     pending_plan: pendingPlanSummary(session),
+    latest_delta_plan: latestDeltaPlanSummary(session),
     scores: session.scores,
     stop_status: session.stop_status,
     open_gaps: openGaps,
@@ -421,10 +439,10 @@ export function summarizeReport(session) {
     session.final_answer.answer_summary || "No final synthesis available yet.";
   const currentPlan = currentPlanSummary(session);
   const pendingPlan = pendingPlanSummary(session);
+  const latestDeltaPlan = latestDeltaPlanSummary(session);
   const blockerLines =
-    Array.isArray(session.gaps) && session.gaps.length > 0
-      ? session.gaps
-          .filter((gap) => gap.status !== "resolved" && gap.status !== "closed")
+    activeGaps(session).length > 0
+      ? activeGaps(session)
           .map(
             (gap) =>
               `- [${gap.severity}] ${gap.summary}${gap.recommended_next_action ? ` (${gap.recommended_next_action})` : ""}`,
@@ -467,6 +485,9 @@ export function summarizeReport(session) {
     `Review required: ${session.plan_state?.review_required ? "yes" : "no"}`,
     currentPlan ? `Current plan: ${currentPlan.summary || currentPlan.plan_version_id}` : "Current plan: none",
     pendingPlan ? `Pending plan: ${pendingPlan.summary || pendingPlan.plan_version_id}` : "Pending plan: none",
+    latestDeltaPlan
+      ? `Latest delta plan: ${latestDeltaPlan.summary || latestDeltaPlan.delta_plan_id}`
+      : "Latest delta plan: none",
     "",
     "# Blockers",
     "",

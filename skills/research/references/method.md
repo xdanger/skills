@@ -16,6 +16,7 @@ Track at least these fields in the session:
 - `research_brief`
 - `plan_state`
 - `plan_versions`
+- `delta_plans`
 - `activity_history`
 - `gaps`
 - `goal`
@@ -39,6 +40,8 @@ Treat `research_brief` as an agent-authored judgment surface:
 Treat `plan_versions` and `activity_history` as review artifacts, not just internal debugging data.
 Treat `gaps[]` as the durable blocker surface. Keep `remaining_gaps` compatible for text outputs, but
 prefer typed gaps for anything another agent may need to update, review, or resolve.
+Treat `delta_plans[]` as agent-authored “what changed and what should happen next” artifacts. The
+runtime should validate and persist them, not invent them.
 
 Suggested gap fields:
 

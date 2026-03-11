@@ -23,6 +23,7 @@ test("upgradeSession upgrades a legacy session to v6", () => {
   assert.ok(Array.isArray(upgraded.evidence[0].claim_links));
   assert.ok(Array.isArray(upgraded.work_items));
   assert.equal(isRealEvidence(upgraded.evidence[0]), false);
+  assert.ok(Array.isArray(upgraded.delta_plans));
 });
 
 test("createSession seeds the v6 top-level schema", () => {
@@ -45,6 +46,7 @@ test("createSession seeds the v6 top-level schema", () => {
   assert.ok(Array.isArray(session.observations));
   assert.ok(session.research_brief);
   assert.ok(Array.isArray(session.plan_versions));
+  assert.ok(Array.isArray(session.delta_plans));
   assert.ok(Array.isArray(session.activity_history));
   assert.ok(Array.isArray(session.gaps));
 });

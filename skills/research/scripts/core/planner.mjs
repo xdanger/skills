@@ -6,6 +6,7 @@ import {
   getThreadById,
   mergeUniqueStrings,
   queueWorkItem,
+  recordDeltaPlan,
   recordPlanVersion,
   syncSessionStage,
   upsertGap,
@@ -233,6 +234,127 @@ function compileGapSpec(rawGap = {}, fallbackSummary = "") {
       typeof rawGap === "object" && !Array.isArray(rawGap)
         ? String(rawGap.created_by ?? rawGap.createdBy ?? "agent").trim()
         : "agent",
+  };
+}
+
+function compileSourcePolicyUpdate(rawSourcePolicy = null) {
+  if (!rawSourcePolicy || typeof rawSourcePolicy !== "object" || Array.isArray(rawSourcePolicy)) {
+    return null;
+  }
+  return {
+    mode: typeof rawSourcePolicy.mode === "string" ? rawSourcePolicy.mode.trim() : "",
+    allow_domains: mergeUniqueStrings(
+      [],
+      ensureArray(rawSourcePolicy.allow_domains ?? rawSourcePolicy.domains)
+        .map((item) => String(item).trim())
+        .filter(Boolean),
+    ),
+    preferred_domains: mergeUniqueStrings(
+      [],
+      ensureArray(rawSourcePolicy.preferred_domains)
+        .map((item) => String(item).trim())
+        .filter(Boolean),
+    ),
+    notes: ensureArray(rawSourcePolicy.notes)
+      .map((item) => String(item).trim())
+      .filter(Boolean),
+  };
+}
+
+function compileQueueProposal(proposal = {}) {
+  if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) {
+    fail("Delta plan queue proposals must be JSON objects.");
+  }
+  const kind = String(proposal.kind ?? "").trim();
+  const scopeType = String(proposal.scope_type ?? proposal.scopeType ?? "").trim();
+  const scopeId = String(proposal.scope_id ?? proposal.scopeId ?? "").trim();
+  if (!kind || !scopeType || !scopeId) {
+    fail("Delta plan queue proposals require `kind`, `scope_type`, and `scope_id`.");
+  }
+  if (!["gather_thread", "verify_claim", "synthesize_session", "handoff_session"].includes(kind)) {
+    fail(`Unsupported delta plan queue proposal kind: ${kind}`);
+  }
+  return {
+    kind,
+    scope_type: scopeType,
+    scope_id: scopeId,
+    reason: String(proposal.reason ?? "").trim() || `Delta plan proposed ${kind}.`,
+    key_suffix: String(proposal.key_suffix ?? proposal.keySuffix ?? "delta-plan").trim(),
+  };
+}
+
+function compileDeltaPlan(rawPlan = {}) {
+  const rawDelta =
+    rawPlan?.delta_plan && typeof rawPlan.delta_plan === "object" ? rawPlan.delta_plan : rawPlan;
+  if (!rawDelta || typeof rawDelta !== "object" || Array.isArray(rawDelta)) {
+    fail("Delta plan must be a JSON object.");
+  }
+  const gapUpdates = ensureArray(rawDelta.gap_updates).map((item) => {
+    const action = String(item.action ?? "upsert").trim() || "upsert";
+    if (!["upsert", "resolve", "close"].includes(action)) {
+      fail(`Unsupported delta plan gap action: ${action}`);
+    }
+    return {
+      action,
+      gap_id: typeof item.gap_id === "string" ? item.gap_id.trim() : "",
+      summary: typeof item.summary === "string" ? item.summary.trim() : "",
+      gap: action === "upsert" ? compileGapSpec(item.gap ?? item) : null,
+    };
+  });
+  const threadActions = ensureArray(rawDelta.thread_actions).map((item) => {
+    const action = String(item.action ?? item.type ?? "").trim();
+    if (!["deepen", "pause", "branch"].includes(action)) {
+      fail(`Unsupported delta plan thread action: ${action}`);
+    }
+    if (action === "branch") {
+      const spec = item.thread ?? item.payload ?? {};
+      const thread = createThreadFromSpec(spec);
+      const rawClaims = Array.isArray(spec.claims) ? spec.claims : [];
+      if (rawClaims.length === 0) {
+        fail("Delta plan thread action `branch` requires at least one claim.");
+      }
+      const claims = rawClaims.map((claim) => createClaimFromSpec(thread.thread_id, claim));
+      thread.claim_ids = claims.map((claim) => claim.claim_id);
+      thread.execution.open_claim_ids = [...thread.claim_ids];
+      return { action, thread, claims, reason: String(item.reason ?? "").trim() };
+    }
+    const threadId = String(item.thread_id ?? item.threadId ?? "").trim();
+    if (!threadId) {
+      fail(`Delta plan thread action \`${action}\` requires \`thread_id\`.`);
+    }
+    return { action, thread_id: threadId, reason: String(item.reason ?? "").trim() };
+  });
+  const claimActions = ensureArray(rawDelta.claim_actions).map((item) => {
+    const action = String(item.action ?? item.type ?? "").trim();
+    if (!["mark_stale", "set_priority"].includes(action)) {
+      fail(`Unsupported delta plan claim action: ${action}`);
+    }
+    const claimId = String(item.claim_id ?? item.claimId ?? "").trim();
+    if (!claimId) {
+      fail(`Delta plan claim action \`${action}\` requires \`claim_id\`.`);
+    }
+    const priority = action === "set_priority" ? String(item.priority ?? "").trim() : "";
+    if (action === "set_priority" && !priority) {
+      fail("Delta plan claim action `set_priority` requires `priority`.");
+    }
+    return {
+      action,
+      claim_id: claimId,
+      priority,
+      reason: String(item.reason ?? "").trim(),
+    };
+  });
+  return {
+    delta_plan_id: String(rawDelta.delta_plan_id ?? "").trim() || createId("delta"),
+    summary: String(rawDelta.summary ?? rawDelta.what_changed ?? "").trim(),
+    what_changed: String(rawDelta.what_changed ?? rawDelta.summary ?? "").trim(),
+    goal_update: String(rawDelta.goal_update ?? "").trim(),
+    source_policy_update: compileSourcePolicyUpdate(rawDelta.source_policy_update),
+    gap_updates: gapUpdates,
+    thread_actions: threadActions,
+    claim_actions: claimActions,
+    queue_proposals: ensureArray(rawDelta.queue_proposals).map((item) => compileQueueProposal(item)),
+    why_now: String(rawDelta.why_now ?? "").trim(),
   };
 }
 
@@ -755,11 +877,56 @@ function ensureNotAwaitingPlanApproval(session) {
   }
 }
 
+function looksLikeDeltaPlan(rawPlan = {}) {
+  if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
+    return false;
+  }
+  return Boolean(rawPlan.delta_plan && typeof rawPlan.delta_plan === "object");
+}
+
 function looksLikeContinuationPatch(rawPlan = {}) {
   if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
     return false;
   }
   return Boolean(rawPlan.continuation_patch && typeof rawPlan.continuation_patch === "object");
+}
+
+function cancelQueuedThreadWork(session, threadId, reason) {
+  for (const item of session.work_items) {
+    if (
+      item.scope_id === threadId &&
+      item.kind === "gather_thread" &&
+      item.status === "queued"
+    ) {
+      item.status = "skipped";
+      item.last_error = reason;
+      item.completed_at = new Date().toISOString();
+      item.updated_at = item.completed_at;
+    }
+  }
+}
+
+function validateQueueProposalTarget(session, proposal) {
+  if (proposal.kind === "gather_thread") {
+    if (proposal.scope_type !== "thread" || !getThreadById(session, proposal.scope_id)) {
+      fail("Delta plan queue proposal referenced a missing thread.");
+    }
+    return;
+  }
+  if (proposal.kind === "verify_claim") {
+    if (
+      proposal.scope_type !== "claim" ||
+      !session.claims.some((claim) => claim.claim_id === proposal.scope_id)
+    ) {
+      fail("Delta plan queue proposal referenced a missing claim.");
+    }
+    return;
+  }
+  if (proposal.kind === "synthesize_session" || proposal.kind === "handoff_session") {
+    if (proposal.scope_type !== "session" || proposal.scope_id !== session.session_id) {
+      fail("Delta plan queue proposal referenced an invalid session target.");
+    }
+  }
 }
 
 function compileContinuationOperation(operation = {}) {
@@ -1019,12 +1186,156 @@ function applyContinuationPatch(
   return continuation;
 }
 
+function applyDeltaPlan(
+  session,
+  rawDelta,
+  { parentWorkItemId = null, action = "delta_plan" } = {},
+) {
+  const compiled = compileDeltaPlan(rawDelta);
+  const existing = ensureArray(session.delta_plans).find(
+    (item) => item.delta_plan_id === compiled.delta_plan_id,
+  );
+  if (existing) {
+    appendDecision(session, "delta_plan_skip", "Skipped a duplicate agent-authored delta plan.", {
+      delta_plan_id: compiled.delta_plan_id,
+    });
+    return existing;
+  }
+
+  if (compiled.goal_update) {
+    session.goal = normalizeGoal(compiled.goal_update);
+  }
+  mergeResearchBrief(session, {
+    objective: compiled.goal_update || "",
+    source_policy: compiled.source_policy_update,
+    clarification_notes: [],
+  });
+
+  for (const update of compiled.gap_updates) {
+    if (update.action === "upsert" && update.gap) {
+      upsertGap(session, {
+        ...update.gap,
+        created_by: update.gap.created_by ?? "agent",
+      });
+      session.stop_status.remaining_gaps = mergeUniqueStrings(session.stop_status.remaining_gaps, [
+        update.gap.summary,
+      ]);
+      continue;
+    }
+    const targetGap = ensureArray(session.gaps).find(
+      (gap) =>
+        (update.gap_id && gap.gap_id === update.gap_id) ||
+        (update.summary && gap.summary === update.summary),
+    );
+    if (!targetGap) {
+      fail("Delta plan gap update referenced a missing gap.");
+    }
+    targetGap.status = update.action === "resolve" ? "resolved" : "closed";
+    targetGap.updated_at = new Date().toISOString();
+  }
+
+  for (const threadAction of compiled.thread_actions) {
+    if (threadAction.action === "branch") {
+      session.threads.push(threadAction.thread);
+      session.claims.push(...threadAction.claims);
+      queueWorkItem(session, {
+        kind: "gather_thread",
+        scopeType: "thread",
+        scopeId: threadAction.thread.thread_id,
+        keySuffix: `delta-${compiled.delta_plan_id}`,
+        reason: threadAction.reason || "Delta plan proposed a new branch.",
+        dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+      });
+      continue;
+    }
+    const thread = getThreadById(session, threadAction.thread_id);
+    if (!thread) {
+      fail("Delta plan thread action referenced a missing thread.");
+    }
+    if (threadAction.action === "pause") {
+      thread.execution.gather_status = "blocked";
+      thread.notes = [thread.notes, threadAction.reason].filter(Boolean).join(" ").trim();
+      cancelQueuedThreadWork(
+        session,
+        thread.thread_id,
+        threadAction.reason || "Delta plan paused queued gather work for this thread.",
+      );
+      continue;
+    }
+    if (threadAction.action === "deepen") {
+      thread.execution.gather_status = "queued";
+      queueWorkItem(session, {
+        kind: "gather_thread",
+        scopeType: "thread",
+        scopeId: thread.thread_id,
+        keySuffix: `delta-${compiled.delta_plan_id}`,
+        reason: threadAction.reason || "Delta plan requested a deeper gather pass.",
+        dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+      });
+    }
+  }
+
+  for (const claimAction of compiled.claim_actions) {
+    const claim = session.claims.find((item) => item.claim_id === claimAction.claim_id);
+    if (!claim) {
+      fail("Delta plan claim action referenced a missing claim.");
+    }
+    if (claimAction.action === "mark_stale") {
+      claim.verification.stale = true;
+      claim.verification.status = "queued";
+      queueWorkItem(session, {
+        kind: "verify_claim",
+        scopeType: "claim",
+        scopeId: claim.claim_id,
+        keySuffix: `delta-${compiled.delta_plan_id}`,
+        reason: claimAction.reason || "Delta plan requested claim re-verification.",
+        dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+      });
+      continue;
+    }
+    if (claimAction.action === "set_priority" && claimAction.priority) {
+      claim.priority = claimAction.priority;
+      claim.answer_relevance = claimAction.priority === "high" ? "high" : claim.answer_relevance;
+    }
+  }
+
+  for (const proposal of compiled.queue_proposals) {
+    validateQueueProposalTarget(session, proposal);
+    queueWorkItem(session, {
+      kind: proposal.kind,
+      scopeType: proposal.scope_type,
+      scopeId: proposal.scope_id,
+      keySuffix: proposal.key_suffix || `delta-${compiled.delta_plan_id}`,
+      reason: proposal.reason,
+      dependsOn: parentWorkItemId ? [parentWorkItemId] : [],
+    });
+  }
+
+  const recorded = recordDeltaPlan(session, compiled);
+  appendDecision(session, action, "Applied an agent-authored delta plan.", {
+    delta_plan_id: recorded.delta_plan_id,
+    summary: recorded.summary,
+    gap_update_count: recorded.gap_updates.length,
+    thread_action_count: recorded.thread_actions.length,
+    claim_action_count: recorded.claim_actions.length,
+    queue_proposal_count: recorded.queue_proposals.length,
+  });
+  syncSessionStage(session);
+  return recorded;
+}
+
 export function applyResearchPlan(
   session,
   rawPlan,
   { mode = "replace", parentWorkItemId = null } = {},
 ) {
   ensureNotAwaitingPlanApproval(session);
+  if (looksLikeDeltaPlan(rawPlan)) {
+    return applyDeltaPlan(session, rawPlan, {
+      parentWorkItemId,
+      action: "delta_plan",
+    });
+  }
   if (looksLikeContinuationPatch(rawPlan)) {
     return applyContinuationPatch(session, rawPlan, {
       parentWorkItemId,

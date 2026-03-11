@@ -170,6 +170,36 @@ function createGap(value = {}) {
   };
 }
 
+function createDeltaPlan(value = {}) {
+  const now = isoNow();
+  return {
+    delta_plan_id: value.delta_plan_id ?? createId("delta"),
+    summary: String(value.summary ?? value.what_changed ?? "").trim(),
+    what_changed: String(value.what_changed ?? value.summary ?? "").trim(),
+    goal_update: String(value.goal_update ?? "").trim(),
+    source_policy_update:
+      value.source_policy_update && typeof value.source_policy_update === "object"
+        ? {
+            mode:
+              typeof value.source_policy_update.mode === "string"
+                ? value.source_policy_update.mode.trim()
+                : "",
+            allow_domains: ensureArray(value.source_policy_update.allow_domains),
+            preferred_domains: ensureArray(value.source_policy_update.preferred_domains),
+            notes: ensureArray(value.source_policy_update.notes),
+          }
+        : null,
+    gap_updates: ensureArray(value.gap_updates),
+    thread_actions: ensureArray(value.thread_actions),
+    claim_actions: ensureArray(value.claim_actions),
+    queue_proposals: ensureArray(value.queue_proposals),
+    why_now: String(value.why_now ?? "").trim(),
+    status: String(value.status ?? "applied").trim() || "applied",
+    created_at: value.created_at ?? now,
+    applied_at: value.applied_at ?? now,
+  };
+}
+
 function summarizePlanThread(thread = {}) {
   return {
     thread_id: thread.thread_id ?? null,
@@ -687,7 +717,9 @@ export function upsertGap(session, gapInput = {}) {
     fail("Gap entries require a non-empty `summary`.");
   }
   const existing = ensureArray(session.gaps).find(
-    (gap) => gapIdentity(gap) === gapIdentity(normalized),
+    (gap) =>
+      (normalized.gap_id && gap.gap_id === normalized.gap_id) ||
+      gapIdentity(gap) === gapIdentity(normalized),
   );
   if (!existing) {
     session.gaps.push(normalized);
@@ -779,6 +811,26 @@ export function recordPlanVersion(
     claim_count: version.claims.length,
   });
   return version;
+}
+
+export function recordDeltaPlan(session, deltaPlan) {
+  const normalized = createDeltaPlan(deltaPlan);
+  const existing = ensureArray(session.delta_plans).find(
+    (item) => item.delta_plan_id === normalized.delta_plan_id,
+  );
+  if (existing) {
+    return existing;
+  }
+  session.delta_plans.push(normalized);
+  appendActivity(session, "delta_plan_recorded", "Recorded an agent-authored delta plan.", {
+    delta_plan_id: normalized.delta_plan_id,
+    summary: normalized.summary,
+    gap_update_count: normalized.gap_updates.length,
+    thread_action_count: normalized.thread_actions.length,
+    claim_action_count: normalized.claim_actions.length,
+    queue_proposal_count: normalized.queue_proposals.length,
+  });
+  return normalized;
 }
 
 export function approvePendingPlan(session) {
@@ -1134,6 +1186,7 @@ function normalizeLedgerFields(session) {
   session.plan_versions = ensureArray(session.plan_versions).map((item) =>
     normalizePlanVersion(item),
   );
+  session.delta_plans = ensureArray(session.delta_plans).map((item) => createDeltaPlan(item));
   session.activity_history = ensureArray(session.activity_history).map((item) =>
     normalizeActivityEntry(item),
   );
@@ -1286,6 +1339,7 @@ export function createSession({ query, depth, domains, approvalMode = "approved"
       review_required: approvalMode === "pending",
     }),
     plan_versions: [],
+    delta_plans: [],
     activity_history: [],
     gaps: [],
     constraints: {
@@ -1348,6 +1402,7 @@ export function upgradeSession(rawSession) {
     research_brief: rawSession.research_brief,
     plan_state: rawSession.plan_state,
     plan_versions: rawSession.plan_versions,
+    delta_plans: rawSession.delta_plans,
     activity_history: rawSession.activity_history,
     gaps: rawSession.gaps,
     constraints: {

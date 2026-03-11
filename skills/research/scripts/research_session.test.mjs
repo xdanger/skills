@@ -361,6 +361,109 @@ test("structured continuation patches are blocked while a plan approval is pendi
   );
 });
 
+test("continue can apply an agent-authored delta plan file", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+  });
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  const targetThread = session.threads[0];
+  const targetClaim = session.claims[0];
+  const tempDir = mkdtempSync(join(tmpdir(), "research-delta-plan-"));
+  const deltaFile = join(tempDir, "delta.json");
+  writeFileSync(
+    deltaFile,
+    JSON.stringify({
+      delta_plan: {
+        delta_plan_id: "delta-cli-1",
+        summary: "Pricing evidence needs a fresh pass.",
+        goal_update: "Research AI coding agents for enterprise adoption and pricing clarity",
+        gap_updates: [
+          {
+            action: "upsert",
+            gap: {
+              kind: "freshness",
+              summary: "Need fresher pricing evidence.",
+              scope_type: "thread",
+              scope_id: targetThread.thread_id,
+              severity: "high",
+            },
+          },
+        ],
+        thread_actions: [
+          {
+            action: "deepen",
+            thread_id: targetThread.thread_id,
+            reason: "One more gather pass is needed for pricing.",
+          },
+        ],
+        claim_actions: [
+          {
+            action: "mark_stale",
+            claim_id: targetClaim.claim_id,
+          },
+        ],
+        queue_proposals: [
+          {
+            kind: "synthesize_session",
+            scope_type: "session",
+            scope_id: session.session_id,
+            reason: "Produce an updated synthesis after the delta plan.",
+          },
+        ],
+      },
+    }),
+  );
+
+  await withMutedStdout(async () => {
+    await main(
+      ["continue", "--session-id", session.session_id, "--plan-file", deltaFile],
+      createFixtureAdapters(),
+    );
+  });
+
+  const updated = loadSession(session.session_id);
+  assert.equal(updated.delta_plans.length, 1);
+  assert.equal(updated.delta_plans[0]?.delta_plan_id, "delta-cli-1");
+  assert.ok(updated.gaps.some((gap) => gap.summary === "Need fresher pricing evidence."));
+});
+
+test("delta plans are blocked while a plan approval is pending", async () => {
+  const session = createSession({
+    query: "Research AI coding agents",
+    depth: "standard",
+    domains: [],
+    approvalMode: "pending",
+  });
+
+  await runOrchestrator(session, createFixtureAdapters(), 6);
+
+  const tempDir = mkdtempSync(join(tmpdir(), "research-pending-delta-"));
+  const deltaFile = join(tempDir, "delta.json");
+  writeFileSync(
+    deltaFile,
+    JSON.stringify({
+      delta_plan: {
+        delta_plan_id: "delta-pending",
+        summary: "The blocker map changed.",
+      },
+    }),
+  );
+
+  await assert.rejects(
+    () =>
+      withMutedStdout(async () => {
+        await main(
+          ["continue", "--session-id", session.session_id, "--plan-file", deltaFile],
+          createFixtureAdapters(),
+        );
+      }),
+    /pending plan approval/u,
+  );
+});
+
 test("continue can append an agent-authored follow-up plan", async () => {
   const session = createSession({
     query: "Research AI coding agents",

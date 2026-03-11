@@ -33,6 +33,7 @@ node "$SCRIPT" continue --session-id <session_id> --instruction "Dig deeper on p
 node "$SCRIPT" start --query "Does product X support SSO?" --plan-file /path/to/plan.json
 node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/followup-plan.json
 node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/continuation-patch.json
+node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/delta-plan.json
 node "$SCRIPT" rejoin --session-id <session_id> --payload-file /path/to/remote-result.json
 node "$SCRIPT" report --session-id <session_id>
 node "$SCRIPT" sources --session-id <session_id>
@@ -204,6 +205,75 @@ When the blocker state matters, prefer a typed gap instead of only a free-text s
 The runtime persists typed gaps in `gaps[]`. Keep `remaining_gaps` as a backward-compatible text view,
 not the primary blocker model.
 
+When the agent already knows what changed and what should happen next, prefer a `delta_plan` over
+more prose or more fallback planning.
+
+Minimal delta plan shape:
+
+```json
+{
+  "delta_plan": {
+    "delta_plan_id": "delta-001",
+    "summary": "Pricing evidence is stale, and enterprise adoption matters more now.",
+    "goal_update": "Compare AI coding agents for enterprise adoption and pricing clarity",
+    "source_policy_update": {
+      "mode": "allowlist",
+      "allow_domains": ["openai.com", "anthropic.com"]
+    },
+    "gap_updates": [
+      {
+        "action": "upsert",
+        "gap": {
+          "kind": "freshness",
+          "summary": "Need fresher pricing evidence.",
+          "scope_type": "thread",
+          "scope_id": "thread-123",
+          "severity": "high"
+        }
+      }
+    ],
+    "thread_actions": [{ "action": "deepen", "thread_id": "thread-123" }],
+    "claim_actions": [{ "action": "mark_stale", "claim_id": "claim-123" }],
+    "queue_proposals": [
+      {
+        "kind": "synthesize_session",
+        "scope_type": "session",
+        "scope_id": "research-123",
+        "reason": "Produce an updated synthesis after the next pass."
+      }
+    ],
+    "why_now": "The blocker map changed and the next step should be explicit."
+  }
+}
+```
+
+Keep this first slice narrow. Let the agent author the delta. Let the runtime validate,
+persist, freeze/apply, and queue safely.
+
+Supported `thread_actions` in this slice:
+
+- `deepen`
+- `pause`
+- `branch`
+
+Supported `claim_actions` in this slice:
+
+- `mark_stale`
+- `set_priority`
+
+Supported `queue_proposals.kind` values in this slice:
+
+- `gather_thread`
+- `verify_claim`
+- `synthesize_session`
+- `handoff_session`
+
+Queue proposals must reference a valid existing target:
+
+- `gather_thread` -> `scope_type: "thread"` and an existing thread id
+- `verify_claim` -> `scope_type: "claim"` and an existing claim id
+- `synthesize_session` / `handoff_session` -> `scope_type: "session"` and the current session id
+
 ## Evidence Rules
 
 - Treat Tavily Research as planning help, not evidence.
@@ -222,6 +292,7 @@ The session ledger now also persists a lightweight control plane:
 - `research_brief`
 - `plan_state`
 - `plan_versions`
+- `delta_plans`
 - `activity_history`
 - `gaps`
 
