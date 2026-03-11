@@ -430,7 +430,12 @@ export function summarizeSession(session) {
       .map((claim) => claim.text),
     unresolved_contradictions: session.contradictions
       .filter((item) => item.status === "open")
-      .map((item) => item.summary),
+      .map((item) => ({
+        summary: item.summary,
+        conflict_type: item.conflict_type ?? null,
+        resolution_strategy: item.resolution_strategy ?? "",
+        status: item.status,
+      })),
     recent_activity: session.activity_history.slice(-5),
     updated_at: session.updated_at,
   };
@@ -472,6 +477,8 @@ export function reviewSessionPacket(session) {
       contradiction_id: item.contradiction_id ?? null,
       summary: item.summary,
       status: item.status,
+      conflict_type: item.conflict_type ?? null,
+      resolution_strategy: item.resolution_strategy ?? "",
     })),
     recent_findings: recentFindings,
     recent_evidence: latestEvidence,
@@ -509,6 +516,17 @@ export function summarizeReport(session) {
     session.final_answer.unresolved_questions.length > 0
       ? session.final_answer.unresolved_questions.map((item) => `- ${item}`).join("\n")
       : "- No unresolved gaps.";
+
+  const openContradictions = session.contradictions.filter((item) => item.status === "open");
+  const contradictionLines =
+    openContradictions.length > 0
+      ? openContradictions
+          .map(
+            (item) =>
+              `- [${item.conflict_type ?? "unknown"}] ${item.summary}${item.resolution_strategy ? ` (strategy: ${item.resolution_strategy})` : ""}`,
+          )
+          .join("\n")
+      : "- No open contradictions.";
 
   const synthesisLines =
     session.final_answer.thread_summaries.length > 0
@@ -554,6 +572,10 @@ export function summarizeReport(session) {
     "# Evidence Gaps",
     "",
     gapLines,
+    "",
+    "# Open Contradictions",
+    "",
+    contradictionLines,
     "",
     "# Final Synthesis",
     "",

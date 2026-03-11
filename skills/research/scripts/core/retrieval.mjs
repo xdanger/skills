@@ -133,10 +133,10 @@ export function inferSourceType(url, title = "", snippet = "") {
     return "community";
   }
   if (
-    /(reuters\.com|bloomberg\.com|nytimes\.com|theverge\.com|techcrunch\.com|wired\.com|arstechnica\.com|venturebeat\.com)/.test(
+    /(reuters\.com|bloomberg\.com|nytimes\.com|theverge\.com|techcrunch\.com|wired\.com|arstechnica\.com|venturebeat\.com|bbc\.com|bbc\.co\.uk|cnn\.com|forbes\.com|theguardian\.com|washingtonpost\.com|wsj\.com|ft\.com|apnews\.com|npr\.org|cnbc\.com|businessinsider\.com)/.test(
       host,
     ) ||
-    /\/(news|press)(\/|$)/.test(pathname)
+    /\/(news|press|newsroom)(\/|$)/.test(pathname)
   ) {
     return "news";
   }
@@ -495,6 +495,8 @@ function buildEvidenceRecord({
     published_at: extractDate(item),
     claim_links: claimLinks,
     attribution: primaryLink?.attribution ?? buildAttribution({ sentence: excerpt }),
+    observed_at: isoNow(),
+    last_verified_at: null,
     provenance: {
       query,
       strategy,

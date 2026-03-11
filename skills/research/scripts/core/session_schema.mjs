@@ -164,6 +164,59 @@ function createPlanState(value = {}) {
   };
 }
 
+export function createContradiction(value = {}) {
+  const now = isoNow();
+  return {
+    contradiction_id: value.contradiction_id ?? createId("cx"),
+    claim_id: value.claim_id ?? value.claimId ?? null,
+    left_evidence_id: value.left_evidence_id ?? value.leftEvidenceId ?? null,
+    right_evidence_id: value.right_evidence_id ?? value.rightEvidenceId ?? null,
+    conflict_type: value.conflict_type ?? value.conflictType ?? "factual_disagreement",
+    summary: String(value.summary ?? "").trim(),
+    status: value.status ?? "open",
+    resolution_strategy: value.resolution_strategy ?? value.resolutionStrategy ?? "",
+    resolved_at: value.resolved_at ?? null,
+    resolution_note: value.resolution_note ?? "",
+    created_at: value.created_at ?? now,
+  };
+}
+
+function contradictionIdentity(item = {}) {
+  return [
+    item.claim_id ?? "",
+    item.left_evidence_id ?? "",
+    item.right_evidence_id ?? "",
+  ]
+    .join("|")
+    .toLowerCase();
+}
+
+export function upsertContradiction(session, input = {}) {
+  const normalized = createContradiction(input);
+  if (!normalized.summary) {
+    fail("Contradiction entries require a non-empty `summary`.");
+  }
+  const existing = ensureArray(session.contradictions).find(
+    (item) =>
+      (normalized.contradiction_id && item.contradiction_id === normalized.contradiction_id) ||
+      contradictionIdentity(item) === contradictionIdentity(normalized),
+  );
+  if (!existing) {
+    session.contradictions.push(normalized);
+    return normalized;
+  }
+  existing.summary = normalized.summary || existing.summary;
+  existing.status = normalized.status || existing.status;
+  existing.conflict_type = normalized.conflict_type || existing.conflict_type;
+  existing.resolution_strategy =
+    normalized.resolution_strategy || existing.resolution_strategy;
+  existing.resolution_note = normalized.resolution_note || existing.resolution_note;
+  if (normalized.status === "resolved" && !existing.resolved_at) {
+    existing.resolved_at = isoNow();
+  }
+  return existing;
+}
+
 function createGap(value = {}) {
   const now = isoNow();
   const summary = String(value.summary ?? value.gap ?? value.text ?? "").trim();
@@ -488,6 +541,8 @@ function normalizeEvidenceRecord(item, index = 0) {
       item.attribution ?? primaryLink?.attribution ?? {},
       item.excerpt ?? item.snippet ?? item.summary ?? "",
     ),
+    observed_at: item.observed_at ?? null,
+    last_verified_at: item.last_verified_at ?? null,
     provenance: {
       query: item.provenance?.query ?? null,
       strategy:
@@ -1079,7 +1134,12 @@ export function claimLinkForEvidence(evidence, claimId) {
 }
 
 export function isPrimarySource(sourceType) {
-  return sourceType === "official" || sourceType === "docs" || sourceType === "academic";
+  return (
+    sourceType === "official" ||
+    sourceType === "docs" ||
+    sourceType === "academic" ||
+    sourceType === "news"
+  );
 }
 
 export function isRealEvidence(evidence) {
@@ -1226,7 +1286,9 @@ function normalizeLedgerFields(session) {
     normalizeEvidenceRecord(item, index),
   );
   session.findings = ensureArray(session.findings).map((item) => normalizeFinding(item));
-  session.contradictions = ensureArray(session.contradictions);
+  session.contradictions = ensureArray(session.contradictions).map((item) =>
+    createContradiction(item),
+  );
   session.scores = createScores(session.scores);
   session.stop_status = createStopStatus(session.stop_status);
   session.final_answer = createFinalAnswer(session.final_answer);

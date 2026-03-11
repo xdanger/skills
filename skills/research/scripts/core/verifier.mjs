@@ -6,6 +6,7 @@ import {
   isPrimarySource,
   linkedClaimEvidence,
   setClaimAssessment,
+  upsertContradiction,
   uniqueBy,
 } from "./session_schema.mjs";
 import { depthProfile, scopedSiteDomains } from "./router.mjs";
@@ -144,7 +145,7 @@ function evaluateClaimAssessment(session, claim, items) {
 }
 
 export function reconcileClaims(session) {
-  const contradictions = [];
+  session.contradictions = [];
 
   for (const claim of session.claims) {
     const items = evidenceForClaim(session, claim.claim_id);
@@ -161,46 +162,52 @@ export function reconcileClaims(session) {
 
     if (claim.assessment.resolution_state === "resolved") {
       if (claim.status === "supported" && bestOppose) {
-        contradictions.push({
-          contradiction_id: `contradiction-${claim.claim_id}`,
-          claim_id: claim.claim_id,
+        upsertContradiction(session, {
+          claimId: claim.claim_id,
+          leftEvidenceId: bestSupport?.evidence_id ?? null,
+          rightEvidenceId: bestOppose.evidence_id,
+          conflictType: "factual_disagreement",
           summary: `Conflicting evidence exists for "${claim.text}", but primary support is stronger.`,
           status: "resolved",
-          evidence_ids: claim.evidence_ids,
+          resolutionStrategy: "stronger_primary_support",
         });
       } else if (claim.status === "rejected" && bestSupport) {
-        contradictions.push({
-          contradiction_id: `contradiction-${claim.claim_id}`,
-          claim_id: claim.claim_id,
+        upsertContradiction(session, {
+          claimId: claim.claim_id,
+          leftEvidenceId: bestSupport.evidence_id,
+          rightEvidenceId: bestOppose?.evidence_id ?? null,
+          conflictType: "factual_disagreement",
           summary: `Conflicting evidence exists for "${claim.text}", but primary opposition is stronger.`,
           status: "resolved",
-          evidence_ids: claim.evidence_ids,
+          resolutionStrategy: "stronger_primary_opposition",
         });
       }
       continue;
     }
 
     if (claim.assessment.resolution_state === "tentative") {
-      contradictions.push({
-        contradiction_id: `contradiction-${claim.claim_id}`,
-        claim_id: claim.claim_id,
+      upsertContradiction(session, {
+        claimId: claim.claim_id,
+        leftEvidenceId: bestSupport?.evidence_id ?? null,
+        rightEvidenceId: bestOppose?.evidence_id ?? null,
+        conflictType: "interpretation",
         summary: `The current verdict for "${claim.text}" remains tentative because primary corroboration is still missing.`,
         status: "open",
-        evidence_ids: claim.evidence_ids,
+        resolutionStrategy: "seek_more_primary_or_recent_source",
       });
       continue;
     }
 
-    contradictions.push({
-      contradiction_id: `contradiction-${claim.claim_id}`,
-      claim_id: claim.claim_id,
+    upsertContradiction(session, {
+      claimId: claim.claim_id,
+      leftEvidenceId: bestSupport?.evidence_id ?? null,
+      rightEvidenceId: bestOppose?.evidence_id ?? null,
+      conflictType: "factual_disagreement",
       summary: `Conflicting evidence exists for "${claim.text}".`,
       status: "open",
-      evidence_ids: claim.evidence_ids,
+      resolutionStrategy: "seek_more_primary_or_recent_source",
     });
   }
-
-  session.contradictions = contradictions;
 }
 
 export function claimNeedsVerification(session, claim) {
@@ -277,6 +284,8 @@ function buildVerificationEvidence({
       },
     ],
     attribution: match.attribution,
+    observed_at: isoNow(),
+    last_verified_at: null,
     provenance: {
       query,
       strategy: "claim_verification",
@@ -410,6 +419,10 @@ export async function verifyClaims(session, runtime, workItem) {
       searchScore: selected.find((candidate) => candidate.url === item.url)?.score ?? null,
     }),
   );
+  const verifiedAt = isoNow();
+  for (const item of evidenceItems) {
+    item.last_verified_at = verifiedAt;
+  }
   session.evidence = mergeEvidenceRecords(session.evidence, evidenceItems);
   recordEvidenceStructures(
     session,
