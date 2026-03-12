@@ -554,6 +554,35 @@ export function buildFallbackPlan(session) {
 /** @fallback — extract planning artifacts from a Tavily Research result */
 export { planningArtifactsFromResearch };
 
+/** @fallback — extract planning artifacts from a Gemini Grounding result */
+export function planningArtifactsFromGeminiGrounding(result) {
+  const content = String(result?.content ?? "").trim();
+  if (!content) {
+    return { hypotheses: [], domain_hints: [] };
+  }
+
+  const hypotheses = [];
+  const sentences = splitSentences(content).filter((s) => s.length > 20 && s.length < 300);
+  hypotheses.push(...sentences.slice(0, 5));
+
+  for (const query of result.web_search_queries ?? []) {
+    if (query && !hypotheses.some((h) => h.toLowerCase().includes(query.toLowerCase()))) {
+      hypotheses.push(query);
+    }
+  }
+
+  const chunkTitles = (result.grounding_chunks ?? [])
+    .map((chunk) => chunk.title)
+    .filter(Boolean)
+    .join(" ");
+  const domainHints = domainsFromText(chunkTitles);
+
+  return {
+    hypotheses: hypotheses.slice(0, 8),
+    domain_hints: domainHints.slice(0, 6),
+  };
+}
+
 /** @legacy — infer continuation intent from prose instruction */
 export function inferContinuationFromProse(session, instruction, domains = []) {
   const trimmed = String(instruction).trim();

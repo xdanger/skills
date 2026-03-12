@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { env } from "node:process";
 import { fileURLToPath, URL } from "node:url";
 import { join } from "node:path";
 import { fail } from "./session_schema.mjs";
@@ -38,6 +39,25 @@ function callMcporter(tool, args, timeoutMs = 180000) {
   }
   const output = shellOut("npx", cliArgs, timeoutMs);
   return JSON.parse(output);
+}
+
+function callHttpJson(url, { headers = {}, body = null, timeoutMs = 30000 } = {}) {
+  const args = ["-s", "--max-time", String(Math.ceil(timeoutMs / 1000))];
+  for (const [key, value] of Object.entries(headers)) {
+    args.push("-H", `${key}: ${value}`);
+  }
+  if (body) {
+    args.push("-H", "Content-Type: application/json", "-d", JSON.stringify(body));
+  }
+  args.push(url);
+  args.push("--fail-with-body");
+  const output = shellOut("curl", args, timeoutMs + 5000);
+  try {
+    return JSON.parse(output);
+  } catch {
+    const snippet = String(output).slice(0, 200).trim();
+    fail(`HTTP response was not valid JSON (${url.split("?")[0]}): ${snippet || "(empty)"}`);
+  }
 }
 
 function assertObject(value, label) {
@@ -158,6 +178,65 @@ export function validateTavilyResearchResponse(payload) {
   };
 }
 
+function normalizeBraveContextItem(item, sources = {}) {
+  assertObject(item, "Brave context result");
+  assertString(item.url, "Brave context result.url");
+  const sourceInfo = sources[item.url] ?? {};
+  const age = Array.isArray(sourceInfo.age) ? sourceInfo.age : [];
+  return {
+    url: item.url,
+    title: item.title ?? sourceInfo.title ?? item.url,
+    snippets: Array.isArray(item.snippets) ? item.snippets : [],
+    hostname: typeof sourceInfo.hostname === "string" ? sourceInfo.hostname : "",
+    published_date: typeof age[1] === "string" ? age[1] : null,
+  };
+}
+
+export function validateBraveContextResponse(payload) {
+  assertObject(payload, "Brave context");
+  const grounding = payload.grounding ?? {};
+  const generic = Array.isArray(grounding.generic) ? grounding.generic : [];
+  return {
+    results: generic.map((item) => normalizeBraveContextItem(item, payload.sources ?? {})),
+  };
+}
+
+export function validateGeminiGroundingResponse(payload) {
+  assertObject(payload, "Gemini grounding");
+  const candidate = Array.isArray(payload.candidates) ? payload.candidates[0] : null;
+  if (!candidate) {
+    fail("Gemini grounding response contained no candidates.");
+  }
+  const parts = candidate.content?.parts ?? [];
+  const content = parts
+    .map((p) => (typeof p.text === "string" ? p.text : ""))
+    .join("\n")
+    .trim();
+  const metadata = candidate.groundingMetadata ?? {};
+  return {
+    content,
+    web_search_queries: Array.isArray(metadata.webSearchQueries)
+      ? metadata.webSearchQueries
+      : [],
+    grounding_chunks: (
+      Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : []
+    ).map((chunk) => ({
+      uri: chunk.web?.uri ?? "",
+      title: chunk.web?.title ?? "",
+    })),
+    grounding_supports: (
+      Array.isArray(metadata.groundingSupports) ? metadata.groundingSupports : []
+    ).map((support) => ({
+      text: support.segment?.text ?? "",
+      start_index: support.segment?.startIndex ?? 0,
+      end_index: support.segment?.endIndex ?? 0,
+      chunk_indices: Array.isArray(support.groundingChunkIndices)
+        ? support.groundingChunkIndices
+        : [],
+    })),
+  };
+}
+
 export function validateManusCreateTaskResponse(payload) {
   assertObject(payload, "Manus create task");
   assertOptionalString(payload.task_id, "Manus create task.task_id");
@@ -230,6 +309,54 @@ export function createDefaultAdapters() {
             model: depth === "quick" ? "mini" : depth === "deep" ? "pro" : "auto",
           },
           depth === "deep" ? 300000 : 180000,
+        ),
+      );
+    },
+    hasBraveContext() {
+      return Boolean(env.BRAVE_SEARCH_API_KEY);
+    },
+    runBraveContext({ query, maxTokens, count, goggles }) {
+      const apiKey = env.BRAVE_SEARCH_API_KEY;
+      if (!apiKey) {
+        fail("BRAVE_SEARCH_API_KEY is not set.");
+      }
+      const body = {
+        q: query,
+        maximum_number_of_tokens: maxTokens ?? 8192,
+        count: count ?? 20,
+      };
+      if (goggles) {
+        body.goggles = goggles;
+      }
+      return validateBraveContextResponse(
+        callHttpJson("https://api.search.brave.com/res/v1/llm/context", {
+          headers: {
+            "X-Subscription-Token": apiKey,
+            Accept: "application/json",
+          },
+          body,
+        }),
+      );
+    },
+    hasGeminiGrounding() {
+      return Boolean(env.GEMINI_API_KEY);
+    },
+    runGeminiGrounding({ query }) {
+      const apiKey = env.GEMINI_API_KEY;
+      if (!apiKey) {
+        fail("GEMINI_API_KEY is not set.");
+      }
+      return validateGeminiGroundingResponse(
+        callHttpJson(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+          {
+            headers: { "x-goog-api-key": apiKey },
+            body: {
+              contents: [{ parts: [{ text: query }] }],
+              tools: [{ google_search: {} }],
+            },
+            timeoutMs: 60000,
+          },
         ),
       );
     },

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  braveGogglesFromPolicy,
   chooseManusProfile,
   classifyTaskShape,
   depthProfile,
@@ -49,6 +50,31 @@ test("chooseManusProfile uses lite regular and max strategically", () => {
   assert.equal(
     chooseManusProfile("Produce a max comprehensive artifact-heavy report", "deep", "async"),
     "manus-1.6-max",
+  );
+});
+
+test("braveGogglesFromPolicy generates correct Goggles syntax", () => {
+  assert.equal(braveGogglesFromPolicy(), undefined);
+  assert.equal(braveGogglesFromPolicy({}), undefined);
+  assert.equal(braveGogglesFromPolicy({ preferred_domains: [] }), undefined);
+
+  assert.equal(
+    braveGogglesFromPolicy({ preferred_domains: ["docs.python.org", "mdn.io"] }),
+    "$site=docs.python.org,boost=5\n$site=mdn.io,boost=5",
+  );
+
+  assert.equal(
+    braveGogglesFromPolicy({ allow_domains: ["example.com"] }),
+    "$discard\n$site=example.com",
+  );
+
+  assert.equal(
+    braveGogglesFromPolicy({
+      allow_domains: ["example.com"],
+      preferred_domains: ["other.com"],
+    }),
+    "$discard\n$site=example.com",
+    "allow_domains takes precedence over preferred_domains",
   );
 });
 

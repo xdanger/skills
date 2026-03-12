@@ -64,6 +64,42 @@ export function createFixtureAdapters(overrides = {}) {
         content: `Hypothesis one. Hypothesis two. ${input} likely involves pricing, deployment, and adoption.`,
       };
     },
+    hasBraveContext() {
+      return false;
+    },
+    runBraveContext({ query }) {
+      return {
+        results: [
+          {
+            url: "https://example.com/brave-result",
+            title: "Brave context result",
+            snippets: [`${query} with brave context evidence and grounded snippets`],
+            hostname: "example.com",
+            published_date: "2026-02-01",
+          },
+        ],
+      };
+    },
+    hasGeminiGrounding() {
+      return false;
+    },
+    runGeminiGrounding({ query }) {
+      return {
+        content: `${query} involves multiple factors. Key considerations include scope, impact, and methodology.`,
+        web_search_queries: [`${query} overview`, `${query} details`],
+        grounding_chunks: [
+          { uri: "https://vertexaisearch.cloud.google.com/...", title: "example.com" },
+        ],
+        grounding_supports: [
+          {
+            text: `${query} involves multiple factors.`,
+            start_index: 0,
+            end_index: 40,
+            chunk_indices: [0],
+          },
+        ],
+      };
+    },
     runManusTask({ prompt, profile }) {
       return {
         task_id: `manus-${profile}`,

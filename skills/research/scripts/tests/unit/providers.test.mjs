@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  validateBraveContextResponse,
+  validateGeminiGroundingResponse,
   validateManusCreateTaskResponse,
   validateTavilyExtractResponse,
   validateTavilyMapResponse,
@@ -9,6 +11,8 @@ import {
   validateTavilySearchResponse,
 } from "../../core/providers.mjs";
 import {
+  braveContextSample,
+  geminiGroundingSample,
   manusCreateTaskSample,
   tavilyExtractSample,
   tavilyMapSample,
@@ -42,6 +46,27 @@ test("validateTavilyResearchResponse accepts planning-style research payload", (
 
   assert.equal(result.status, "completed");
   assert.match(result.content, /retrieval augmented generation/i);
+});
+
+test("validateBraveContextResponse accepts LLM Context payload", () => {
+  const result = validateBraveContextResponse(braveContextSample);
+
+  assert.equal(result.results.length, 1);
+  assert.equal(result.results[0].url, "https://example.com/page");
+  assert.equal(result.results[0].snippets.length, 2);
+  assert.equal(result.results[0].hostname, "example.com");
+  assert.equal(result.results[0].published_date, "2025-01-15");
+});
+
+test("validateGeminiGroundingResponse accepts grounding payload", () => {
+  const result = validateGeminiGroundingResponse(geminiGroundingSample);
+
+  assert.match(result.content, /Spain won Euro 2024/u);
+  assert.deepEqual(result.web_search_queries, ["UEFA Euro 2024 winner"]);
+  assert.equal(result.grounding_chunks.length, 1);
+  assert.equal(result.grounding_chunks[0].title, "uefa.com");
+  assert.equal(result.grounding_supports.length, 1);
+  assert.deepEqual(result.grounding_supports[0].chunk_indices, [0]);
 });
 
 test("validateManusCreateTaskResponse accepts create-task payload", () => {

@@ -188,10 +188,20 @@ The agent should use the full 5-tier scale in plans, evidence evaluation, and sy
 
 Default to Tavily. Choose the narrowest tool:
 
-- `search → extract`: normal path
+- `search → extract`: normal evidence gathering path
 - `research`: planning accelerator for broad scans
 - `map → extract`: docs, policy, changelog, site-focused work
 - `crawl`: scoped audit-like coverage only
+
+Additional providers (used automatically when API keys are available):
+
+- **Brave LLM Context** (`BRAVE_SEARCH_API_KEY`): search+extract in one call,
+  runs as a supplement to Tavily on the first gather round for cross-engine diversity.
+  Supports Goggles for source control — `source_policy.allow_domains` generates a strict
+  allowlist (`$discard` + `$site=`), `preferred_domains` generates boost rules.
+- **Gemini Grounding** (`GEMINI_API_KEY`): second planning accelerator alongside
+  Tavily Research. Provides Google-grounded synthesis and subquery suggestions.
+  Not an evidence source (proxied URIs).
 
 Escalate to Manus only for long-running tasks, connector-backed work, or async deliverables
 (PDF, PPT, CSV). Use `<REPO_ROOT>/skills/manus/SKILL.md` when needed.
@@ -218,4 +228,4 @@ Continue when contradictions remain, sourcing is weak, or important claims hinge
 ## Load Only When Needed
 
 - `references/method.md` — research loop, evidence standards, source grading details
-- `references/providers.md` — Tavily vs Manus routing decisions
+- `references/providers.md` — provider routing decisions (Tavily, Brave, Gemini, Manus)

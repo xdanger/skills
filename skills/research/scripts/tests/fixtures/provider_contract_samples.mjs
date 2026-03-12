@@ -63,6 +63,61 @@ export const tavilyResearchSample = {
   ],
 };
 
+export const braveContextSample = {
+  grounding: {
+    generic: [
+      {
+        url: "https://example.com/page",
+        title: "Example Page",
+        snippets: [
+          "Relevant text chunk extracted from the page.",
+          "Another relevant passage with supporting details.",
+        ],
+      },
+    ],
+    map: [],
+  },
+  sources: {
+    "https://example.com/page": {
+      title: "Example Page",
+      hostname: "example.com",
+      age: ["Wednesday, January 15, 2025", "2025-01-15", "392 days ago"],
+    },
+  },
+};
+
+export const geminiGroundingSample = {
+  candidates: [
+    {
+      content: {
+        parts: [{ text: "Spain won Euro 2024, defeating England 2-1 in the final." }],
+        role: "model",
+      },
+      groundingMetadata: {
+        webSearchQueries: ["UEFA Euro 2024 winner"],
+        groundingChunks: [
+          {
+            web: {
+              uri: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/example",
+              title: "uefa.com",
+            },
+          },
+        ],
+        groundingSupports: [
+          {
+            segment: {
+              startIndex: 0,
+              endIndex: 56,
+              text: "Spain won Euro 2024, defeating England 2-1 in the final.",
+            },
+            groundingChunkIndices: [0],
+          },
+        ],
+      },
+    },
+  ],
+};
+
 export const manusCreateTaskSample = {
   task_id: "task_123",
   task_title: "Research task",

@@ -55,6 +55,36 @@ Tradeoff:
 - more expensive and slower than basic search
 - should be scoped tightly
 
+## Brave LLM Context
+
+Best for:
+
+- search + extract in a single call
+- source-controlled retrieval via Goggles (allowlists, boosts)
+- cross-engine verification alongside Tavily
+- token-budgeted context for tight claim checks
+
+Tradeoff:
+
+- requires `BRAVE_SEARCH_API_KEY` environment variable
+- no MCP tool — called directly via HTTP
+- runs as a supplement to Tavily on the first gather round, not a replacement
+
+## Gemini Grounding Search
+
+Best for:
+
+- planning accelerator (alongside Tavily Research)
+- Google-grounded synthesis with segment-level attribution
+- subquery suggestions via `webSearchQueries`
+
+Tradeoff:
+
+- requires `GEMINI_API_KEY` environment variable
+- grounding chunk URIs are proxied (`vertexaisearch.cloud.google.com`), not original source URLs
+- not suitable as an evidence source — used for planning artifacts only
+- no MCP tool — called directly via HTTP
+
 ## Manus
 
 Best for:

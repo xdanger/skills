@@ -127,6 +127,18 @@ export function shouldUseCrawl(session) {
   );
 }
 
+export function braveGogglesFromPolicy(sourcePolicy = {}) {
+  const allowed = sourcePolicy?.allow_domains ?? [];
+  const preferred = sourcePolicy?.preferred_domains ?? [];
+  if (allowed.length > 0) {
+    return ["$discard", ...allowed.map((d) => `$site=${d}`)].join("\n");
+  }
+  if (preferred.length > 0) {
+    return preferred.map((d) => `$site=${d},boost=5`).join("\n");
+  }
+  return undefined;
+}
+
 export function scopedSiteDomains(query, domains = []) {
   const discovered = [];
   for (const match of String(query).matchAll(/https?:\/\/([^/\s]+)/gu)) {

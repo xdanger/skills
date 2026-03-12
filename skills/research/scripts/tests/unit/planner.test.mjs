@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { approvePendingPlan, createSession } from "../../core/session_schema.mjs";
 import { applyContinuationInstruction, applyResearchPlan, planSession } from "../../core/planner.mjs";
+import { planningArtifactsFromGeminiGrounding } from "../../core/planner_legacy.mjs";
 import { scoreSession, updateStopStatus } from "../../core/scorer.mjs";
 import { createFixtureAdapters, createTestRuntime } from "../fixtures/provider_fixtures.mjs";
 
@@ -95,6 +96,41 @@ test("planSession shapes verification claims around the user's actual question",
         !/there is official|primary-source evidence that can confirm/iu.test(claim.text),
     ),
   );
+});
+
+test("planningArtifactsFromGeminiGrounding extracts hypotheses and domain hints", () => {
+  const result = {
+    content:
+      "Spain won Euro 2024, defeating England 2-1 in the final. The tournament was held in Germany.",
+    web_search_queries: ["UEFA Euro 2024 winner", "Euro 2024 host country"],
+    grounding_chunks: [
+      { uri: "https://vertexaisearch.cloud.google.com/...", title: "uefa.com" },
+      { uri: "https://vertexaisearch.cloud.google.com/...", title: "bbc.co.uk" },
+    ],
+    grounding_supports: [],
+  };
+
+  const artifacts = planningArtifactsFromGeminiGrounding(result);
+
+  assert.ok(artifacts.hypotheses.length > 0);
+  assert.ok(artifacts.hypotheses.some((h) => /Spain/u.test(h)));
+  assert.ok(artifacts.hypotheses.some((h) => /Euro 2024/u.test(h)));
+  assert.ok(artifacts.domain_hints.some((d) => d === "uefa.com" || d === "bbc.co.uk"));
+});
+
+test("planningArtifactsFromGeminiGrounding handles null/empty result gracefully", () => {
+  assert.deepEqual(planningArtifactsFromGeminiGrounding(null), {
+    hypotheses: [],
+    domain_hints: [],
+  });
+  assert.deepEqual(planningArtifactsFromGeminiGrounding({ content: "" }), {
+    hypotheses: [],
+    domain_hints: [],
+  });
+  assert.deepEqual(planningArtifactsFromGeminiGrounding({ content: "Short." }), {
+    hypotheses: [],
+    domain_hints: [],
+  });
 });
 
 test("applyResearchPlan lets the agent seed threads and claims directly", () => {

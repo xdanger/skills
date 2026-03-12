@@ -21,6 +21,7 @@ import {
   buildFallbackPlan,
   defaultComparisonAxes,
   inferContinuationFromProse,
+  planningArtifactsFromGeminiGrounding,
   planningArtifactsFromResearch,
 } from "./planner_legacy.mjs";
 
@@ -725,6 +726,33 @@ export async function planSession(session, runtime, workItem = null) {
     session.planning_artifacts.hypotheses = artifacts.hypotheses;
     session.planning_artifacts.domain_hints = artifacts.domain_hints;
     session.planning_artifacts.comparison_axes = artifacts.comparison_axes;
+  }
+
+  if (
+    session.task_shape === "broad" &&
+    session.constraints.depth !== "quick" &&
+    runtime.adapters.hasGeminiGrounding()
+  ) {
+    const { result } = await runtime.runProviderOperation(
+      {
+        provider: "gemini",
+        tool: "grounding",
+        inputSummary: `Planning accelerator: ${session.goal}`,
+        scopeType: "session",
+        scopeId: session.session_id,
+        workItemId: workItem?.work_item_id ?? null,
+      },
+      () => runtime.adapters.runGeminiGrounding({ query: session.goal }),
+    );
+    const geminiArtifacts = planningArtifactsFromGeminiGrounding(result);
+    session.planning_artifacts.hypotheses = mergeUniqueStrings(
+      session.planning_artifacts.hypotheses,
+      geminiArtifacts.hypotheses,
+    );
+    session.planning_artifacts.domain_hints = mergeUniqueStrings(
+      session.planning_artifacts.domain_hints,
+      geminiArtifacts.domain_hints,
+    );
   }
 
   if (session.threads.length === 0 || session.claims.length === 0) {

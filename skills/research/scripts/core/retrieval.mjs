@@ -9,7 +9,7 @@ import {
   upsertObservation,
   uniqueBy,
 } from "./session_schema.mjs";
-import { depthProfile, shouldUseCrawl } from "./router.mjs";
+import { braveGogglesFromPolicy, depthProfile, shouldUseCrawl } from "./router.mjs";
 import { URL } from "node:url";
 
 const CLAIM_STOP_WORDS = new Set([
@@ -800,6 +800,79 @@ async function gatherSiteEvidence(session, runtime, thread, workItem, profile) {
   recordEvidenceStructures(session, thread, evidenceItems);
 }
 
+async function gatherBraveContextEvidence(session, runtime, thread, workItem, profile) {
+  const queryPlans = thread.subqueries.length > 0 ? thread.subqueries : [session.goal];
+  const claims = claimsForThread(session, thread.thread_id);
+  if (claims.length === 0) {
+    return;
+  }
+
+  const goggles = braveGogglesFromPolicy(session.research_brief?.source_policy);
+  const maxTokens = profile.searchDepth === "advanced" ? 16384 : 8192;
+
+  for (const query of queryPlans.slice(0, Math.max(1, Math.floor(profile.searchFanout / 2)))) {
+    const { operation, run, result } = await runtime.runProviderOperation(
+      {
+        provider: "brave",
+        tool: "context",
+        inputSummary: query,
+        scopeType: "thread",
+        scopeId: thread.thread_id,
+        workItemId: workItem.work_item_id,
+      },
+      () =>
+        runtime.adapters.runBraveContext({
+          query,
+          maxTokens,
+          count: profile.extractLimit * 2,
+          goggles,
+        }),
+    );
+
+    const braveResults = result.results || [];
+    for (const braveItem of braveResults) {
+      const snippets = braveItem.snippets ?? [];
+      mergeCandidateUrls(session, [
+        buildCandidateUrl(
+          thread.thread_id,
+          query,
+          {
+            url: braveItem.url,
+            title: braveItem.title,
+            score: 0.8,
+            content: snippets[0] ?? "",
+          },
+          snippets.length > 0,
+          snippets.length > 0 ? "selected" : "empty_snippets",
+          operation.operation_id,
+          workItem.work_item_id,
+        ),
+      ]);
+    }
+
+    const evidenceItems = braveResults
+      .filter((item) => (item.snippets ?? []).length > 0)
+      .map((item) =>
+        buildEvidenceRecord({
+          runId: run.run_id,
+          operationId: operation.operation_id,
+          workItemId: workItem.work_item_id,
+          claims,
+          item: {
+            url: item.url,
+            title: item.title,
+            raw_content: item.snippets.join("\n\n"),
+            published_date: item.published_date,
+          },
+          query,
+          strategy: "brave_context",
+        }),
+      );
+    mergeEvidence(session, evidenceItems);
+    recordEvidenceStructures(session, thread, evidenceItems);
+  }
+}
+
 export async function gatherEvidence(session, runtime, workItem) {
   const profile = depthProfile(session.constraints.depth);
   const thread = getThreadById(session, workItem.scope_id);
@@ -829,6 +902,9 @@ export async function gatherEvidence(session, runtime, workItem) {
     await gatherSiteEvidence(session, runtime, thread, workItem, profile);
   } else {
     await gatherSearchExtractEvidence(session, runtime, thread, workItem, profile);
+    if (thread.execution.gather_rounds === 0 && runtime.adapters.hasBraveContext()) {
+      await gatherBraveContextEvidence(session, runtime, thread, workItem, profile);
+    }
   }
 
   thread.execution.gather_status = "gathered";
