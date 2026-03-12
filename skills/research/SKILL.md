@@ -7,14 +7,16 @@ description: Comprehensive, resumable deep research for questions that need iter
 
 Run research as a resumable session with a local ledger, not as a one-shot answer.
 
-Use this skill when the agent should:
+Use this skill when the task involves:
 
-- investigate across multiple passes
-- preserve evidence and contradictions
-- continue later without restarting
-- route work across Tavily and, when needed, Manus
+- natural science, real-world facts, or any scenario requiring accurate information
+- investigation across multiple passes with evidence tracking
+- preserving contradictions and uncertainty instead of smoothing them away
+- continuing later without restarting
+- routing work across Tavily and, when needed, Manus
 
-The runtime should enforce reliability. The agent should own research judgment.
+If the question touches real-world information and accuracy matters, use this skill rather
+than answering from memory. The runtime enforces reliability. The agent owns research judgment.
 
 ## Use The Script
 
@@ -303,6 +305,33 @@ Queue proposals must reference a valid existing target:
 - `verify_claim` -> `scope_type: "claim"` and an existing claim id
 - `synthesize_session` / `handoff_session` -> `scope_type: "session"` and the current session id
 
+## Source Credibility Tiers
+
+Rank every piece of evidence by this hierarchy when evaluating claims:
+
+1. **Axiomatic** — mathematics, established physical laws, formal proofs
+2. **Legal/regulatory** — government-published statutes, court rulings, SEC filings, audited financials
+3. **Institutional data** — government statistics, IMF/World Bank datasets, authoritative books,
+   highly-cited peer-reviewed papers
+4. **Official and authoritative** — company websites, official social media, Wikipedia,
+   journals like Science/Nature, major encyclopedias (Britannica)
+5. **Other** — blogs, forums, aggregator summaries, opinion pieces — useful for leads and
+   context but cannot be the sole basis for a claim
+
+The runtime maps these to `high` (tiers 1-3), `medium` (tier 4), and `low` (tier 5) for
+scoring. But the agent should use the full 5-tier scale when planning, evaluating evidence,
+and writing synthesis.
+
+## Reasoning Strategy
+
+- Assign credibility weight to each source using the tier system above.
+- When the core evidence is tier 1-3, the conclusion may be labeled "high confidence."
+- When same-tier sources contradict each other, prefer the more recent source with stronger
+  methodology. When a higher-tier source conflicts with a lower-tier one, the higher tier wins.
+- When only tier 4-5 evidence is available, lower the conclusion confidence and say so explicitly.
+- Even if the reasoning is internally consistent, if no tier 1-2 evidence supports the causal
+  mechanism, mark the explanation as "speculative" and state what would falsify it.
+
 ## Evidence Rules
 
 - Treat Tavily Research as planning help, not evidence.
@@ -317,9 +346,9 @@ Queue proposals must reference a valid existing target:
 - Treat attribution as best-effort support metadata, not as proof that the runtime fully
   understands the source.
 
-When the user's query is in a non-English language, prefer English subqueries for web search
-unless the topic is language-specific or regional. Tavily search returns better results with
-English queries for most international topics.
+Always use English keywords for web search unless the topic is specifically regional or
+language-bound (e.g., Chinese law, Japanese cultural practice). Tavily returns better
+results with English queries for most international topics.
 
 Contradictions are structured objects with `conflict_type` (factual_disagreement, temporal,
 interpretation, scope), `resolution_strategy`, and `status` (open, resolved, dismissed).

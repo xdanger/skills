@@ -57,13 +57,22 @@ Suggested gap fields:
 
 ## Source Grading
 
-Use simple source quality notes in the ledger:
+Rank sources by the 5-tier credibility hierarchy defined in SKILL.md:
 
-- `high`: official docs, company pages, standards bodies, government, academic sources
-- `medium`: credible industry analysis, vendor blogs with concrete evidence
-- `low`: thin summaries, unverified reposts, low-context aggregator content
+1. **Axiomatic** — math, physical laws, formal proofs
+2. **Legal/regulatory** — statutes, court rulings, SEC filings, audited financials
+3. **Institutional data** — government stats, IMF/World Bank, authoritative books, high-cite papers
+4. **Official and authoritative** — company websites, Wikipedia, Science/Nature, Britannica
+5. **Other** — blogs, forums, opinion pieces — leads and context only
 
-Prefer multiple domains for important claims. If a high-priority claim depends on one low-quality source, keep it unresolved.
+The runtime simplifies to three labels for scoring:
+
+- `high`: tiers 1-3
+- `medium`: tier 4
+- `low`: tier 5
+
+Prefer multiple domains for important claims. If a high-priority claim depends on one
+low-quality source, keep it unresolved.
 
 For inspectable evidence, store attribution fields when the runtime can infer them:
 
