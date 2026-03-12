@@ -129,6 +129,7 @@ export function compileResearchBrief(rawPlan = {}) {
     clarification_notes: ensureArray(rawBrief.clarification_notes)
       .map((item) => String(item).trim())
       .filter(Boolean),
+    auto_synthesize: Boolean(rawBrief.auto_synthesize),
   };
 }
 
@@ -148,11 +149,11 @@ export function compileGapSpec(rawGap = {}, fallbackSummary = "") {
     summary,
     scope_type:
       typeof rawGap === "object" && !Array.isArray(rawGap)
-        ? rawGap.scope_type ?? rawGap.scopeType ?? null
+        ? (rawGap.scope_type ?? rawGap.scopeType ?? null)
         : null,
     scope_id:
       typeof rawGap === "object" && !Array.isArray(rawGap)
-        ? rawGap.scope_id ?? rawGap.scopeId ?? null
+        ? (rawGap.scope_id ?? rawGap.scopeId ?? null)
         : null,
     severity:
       typeof rawGap === "object" && !Array.isArray(rawGap) && rawGap.severity
@@ -174,7 +175,11 @@ export function compileGapSpec(rawGap = {}, fallbackSummary = "") {
 }
 
 export function compileSourcePolicyUpdate(rawSourcePolicy = null) {
-  if (!rawSourcePolicy || typeof rawSourcePolicy !== "object" || Array.isArray(rawSourcePolicy)) {
+  if (
+    !rawSourcePolicy ||
+    typeof rawSourcePolicy !== "object" ||
+    Array.isArray(rawSourcePolicy)
+  ) {
     return null;
   }
   return {
@@ -207,7 +212,9 @@ export function compileQueueProposal(proposal = {}) {
   if (!kind || !scopeType || !scopeId) {
     fail("Delta plan queue proposals require `kind`, `scope_type`, and `scope_id`.");
   }
-  if (!["gather_thread", "verify_claim", "synthesize_session", "handoff_session"].includes(kind)) {
+  if (
+    !["gather_thread", "verify_claim", "synthesize_session", "handoff_session"].includes(kind)
+  ) {
     fail(`Unsupported delta plan queue proposal kind: ${kind}`);
   }
   return {
@@ -221,7 +228,9 @@ export function compileQueueProposal(proposal = {}) {
 
 export function compileDeltaPlan(rawPlan = {}) {
   const rawDelta =
-    rawPlan?.delta_plan && typeof rawPlan.delta_plan === "object" ? rawPlan.delta_plan : rawPlan;
+    rawPlan?.delta_plan && typeof rawPlan.delta_plan === "object"
+      ? rawPlan.delta_plan
+      : rawPlan;
   if (!rawDelta || typeof rawDelta !== "object" || Array.isArray(rawDelta)) {
     fail("Delta plan must be a JSON object.");
   }
@@ -289,7 +298,9 @@ export function compileDeltaPlan(rawPlan = {}) {
     gap_updates: gapUpdates,
     thread_actions: threadActions,
     claim_actions: claimActions,
-    queue_proposals: ensureArray(rawDelta.queue_proposals).map((item) => compileQueueProposal(item)),
+    queue_proposals: ensureArray(rawDelta.queue_proposals).map((item) =>
+      compileQueueProposal(item),
+    ),
     why_now: String(rawDelta.why_now ?? "").trim(),
   };
 }
@@ -340,7 +351,11 @@ export function compileAgentPlan(rawPlan = {}) {
         compileGapSpec(
           typeof item === "string"
             ? { summary: item, status: "tracking", created_by: "compat" }
-            : { ...item, status: item.status ?? "tracking", created_by: item.created_by ?? "compat" },
+            : {
+                ...item,
+                status: item.status ?? "tracking",
+                created_by: item.created_by ?? "compat",
+              },
         ),
       ),
     ],
@@ -373,7 +388,9 @@ function compileContinuationOperation(operation = {}) {
   if (type === "merge_domains") {
     const domains = mergeUniqueStrings(
       [],
-      ensureArray(operation.domains).map((item) => String(item).trim()).filter(Boolean),
+      ensureArray(operation.domains)
+        .map((item) => String(item).trim())
+        .filter(Boolean),
     );
     if (domains.length === 0) {
       fail("Continuation patch operation `merge_domains` requires at least one domain.");
@@ -464,7 +481,9 @@ export function compileContinuationPatch(rawPatch = {}) {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
     fail("Continuation patch must be a JSON object.");
   }
-  const operations = ensureArray(patch.operations).map((item) => compileContinuationOperation(item));
+  const operations = ensureArray(patch.operations).map((item) =>
+    compileContinuationOperation(item),
+  );
   if (operations.length === 0) {
     fail("Continuation patch must include a non-empty `operations` array.");
   }
@@ -472,10 +491,14 @@ export function compileContinuationPatch(rawPatch = {}) {
     instruction: String(patch.instruction ?? rawPatch.instruction ?? "").trim(),
     mode: String(patch.mode ?? "deepen").trim() || "deepen",
     domains: mergeUniqueStrings(
-      ensureArray(patch.domains).map((item) => String(item).trim()).filter(Boolean),
+      ensureArray(patch.domains)
+        .map((item) => String(item).trim())
+        .filter(Boolean),
       operations.flatMap((operation) => operation.domains ?? []),
     ),
-    notes: ensureArray(patch.notes).map((item) => String(item).trim()).filter(Boolean),
+    notes: ensureArray(patch.notes)
+      .map((item) => String(item).trim())
+      .filter(Boolean),
     operations,
   };
 }

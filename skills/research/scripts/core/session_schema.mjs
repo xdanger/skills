@@ -145,6 +145,7 @@ function createResearchBrief(value = {}, query = "", domains = []) {
     deliverable: value.deliverable ?? "report",
     source_policy: createSourcePolicy(value.source_policy, domains),
     clarification_notes: ensureArray(value.clarification_notes),
+    auto_synthesize: Boolean(value.auto_synthesize),
     created_at: value.created_at ?? now,
     updated_at: value.updated_at ?? now,
   };
@@ -182,11 +183,7 @@ export function createContradiction(value = {}) {
 }
 
 function contradictionIdentity(item = {}) {
-  return [
-    item.claim_id ?? "",
-    item.left_evidence_id ?? "",
-    item.right_evidence_id ?? "",
-  ]
+  return [item.claim_id ?? "", item.left_evidence_id ?? "", item.right_evidence_id ?? ""]
     .join("|")
     .toLowerCase();
 }
@@ -208,8 +205,7 @@ export function upsertContradiction(session, input = {}) {
   existing.summary = normalized.summary || existing.summary;
   existing.status = normalized.status || existing.status;
   existing.conflict_type = normalized.conflict_type || existing.conflict_type;
-  existing.resolution_strategy =
-    normalized.resolution_strategy || existing.resolution_strategy;
+  existing.resolution_strategy = normalized.resolution_strategy || existing.resolution_strategy;
   existing.resolution_note = normalized.resolution_note || existing.resolution_note;
   if (normalized.status === "resolved" && !existing.resolved_at) {
     existing.resolved_at = isoNow();
@@ -228,8 +224,7 @@ function createGap(value = {}) {
     scope_id: value.scope_id ?? value.scopeId ?? null,
     severity: value.severity ?? "medium",
     status: value.status ?? "open",
-    recommended_next_action:
-      value.recommended_next_action ?? value.recommendedNextAction ?? "",
+    recommended_next_action: value.recommended_next_action ?? value.recommendedNextAction ?? "",
     created_by: value.created_by ?? value.createdBy ?? "agent",
     created_at: value.created_at ?? now,
     updated_at: value.updated_at ?? now,
@@ -318,8 +313,7 @@ function normalizePlanVersion(value = {}) {
     research_brief: createResearchBrief(value.research_brief ?? {}, value.goal ?? "", []),
     remaining_gaps: ensureArray(value.remaining_gaps),
     created_at: createdAt,
-    approved_at:
-      value.approved_at ?? (status === "approved" ? createdAt : null),
+    approved_at: value.approved_at ?? (status === "approved" ? createdAt : null),
   };
 }
 
@@ -772,10 +766,7 @@ export function appendActivity(session, type, summary, metadata = {}, stage = se
 
 export function activeGaps(session) {
   return ensureArray(session.gaps).filter(
-    (gap) =>
-      gap.status !== "resolved" &&
-      gap.status !== "closed" &&
-      gap.status !== "tracking",
+    (gap) => gap.status !== "resolved" && gap.status !== "closed" && gap.status !== "tracking",
   );
 }
 
@@ -803,7 +794,8 @@ export function upsertGap(session, gapInput = {}) {
 }
 
 export function syncResearchBrief(session) {
-  const objective = session.goal || session.user_query || session.research_brief?.objective || "";
+  const objective =
+    session.goal || session.user_query || session.research_brief?.objective || "";
   session.research_brief = createResearchBrief(
     {
       ...session.research_brief,
@@ -822,7 +814,9 @@ export function recordPlanVersion(
     planId = null,
     source = "runtime_fallback",
     mode = "replace",
-    status = session.plan_state?.approval_status === "pending" ? "pending_approval" : "approved",
+    status = session.plan_state?.approval_status === "pending"
+      ? "pending_approval"
+      : "approved",
     summary = "",
     threads = [],
     claims = [],
@@ -868,7 +862,8 @@ export function recordPlanVersion(
     session.plan_state.approval_status = "approved";
     session.plan_state.review_required = false;
     session.plan_state.pending_plan_version_id = null;
-    session.plan_state.control_mode = source === "agent_authored" ? "agent_authored" : "runtime_fallback";
+    session.plan_state.control_mode =
+      source === "agent_authored" ? "agent_authored" : "runtime_fallback";
     session.plan_state.workflow_state = "executing";
     session.plan_state.awaiting_agent_decision_since = null;
     session.plan_state.last_approved_at = version.approved_at ?? version.created_at;

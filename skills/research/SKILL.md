@@ -129,6 +129,24 @@ If a plan may be retried, include a stable `plan_id` so duplicate application ca
 Use fallback planning only when the query is simple enough that custom planning would be overkill.
 The fallback planner is a compatibility layer, not the system's brain.
 
+## When the Session Awaits Your Decision
+
+When the session enters `awaiting_agent_decision`, the runtime has finished all queued work and
+is waiting for the agent to decide the next step. Check `status` or `review` to see:
+
+- which claims are resolved and which remain open
+- which contradictions are unresolved
+- which gaps remain
+
+Then choose one of:
+
+- `continue --delta-file` with a `synthesize_session` queue proposal to produce the final answer
+- `continue --delta-file` with `gather_thread` or `verify_claim` proposals to dig deeper
+- `continue --plan-file` to restructure the research entirely
+- `close` if the research is no longer needed
+
+To skip this pause entirely, set `auto_synthesize: true` in the `research_brief`.
+
 ## Continuation
 
 Treat `continue` as a durable mutation of the same session.
@@ -298,6 +316,10 @@ Queue proposals must reference a valid existing target:
   views whenever possible, not only in raw session JSON.
 - Treat attribution as best-effort support metadata, not as proof that the runtime fully
   understands the source.
+
+When the user's query is in a non-English language, prefer English subqueries for web search
+unless the topic is language-specific or regional. Tavily search returns better results with
+English queries for most international topics.
 
 Contradictions are structured objects with `conflict_type` (factual_disagreement, temporal,
 interpretation, scope), `resolution_strategy`, and `status` (open, resolved, dismissed).

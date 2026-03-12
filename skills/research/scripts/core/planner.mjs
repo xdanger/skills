@@ -116,6 +116,9 @@ export function mergeResearchBrief(session, researchBrief = {}) {
     session.research_brief.clarification_notes,
     researchBrief.clarification_notes,
   );
+  if (researchBrief.auto_synthesize != null) {
+    session.research_brief.auto_synthesize = Boolean(researchBrief.auto_synthesize);
+  }
   session.research_brief.updated_at = new Date().toISOString();
 }
 

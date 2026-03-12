@@ -150,6 +150,13 @@ export function inferSourceType(url, title = "", snippet = "") {
     return "academic";
   }
   if (
+    /(brookings\.edu|hoover\.org|cato\.org|rand\.org|cfr\.org|piie\.com|nber\.org|cepr\.org|imf\.org|worldbank\.org|oecd\.org|bis\.org|petersonfoundation\.org|atlanticcouncil\.org|carnegieendowment\.org|chathamhouse\.org|heritage\.org|aei\.org)/.test(
+      host,
+    )
+  ) {
+    return "academic";
+  }
+  if (
     /\b(documentation|docs|developer guide|developer docs|api reference|reference|sdk|manual|help center)\b/.test(
       titleText,
     ) ||
@@ -197,16 +204,18 @@ function claimTokens(claimText) {
 export function inferClaimMatch(claim, snippet, query) {
   const tokens = claimTokens(claim.text);
   const sentences = sentenceSplit(snippet);
-  const evaluated = (sentences.length > 0 ? sentences : [String(snippet)]).map((sentence, index) => {
-    const lowered = sentence.toLowerCase();
-    const matched = tokens.filter((token) => lowered.includes(token));
-    return {
-      sentence,
-      sentenceIndex: sentences.length > 0 ? index : null,
-      matched,
-      score: matched.length,
-    };
-  });
+  const evaluated = (sentences.length > 0 ? sentences : [String(snippet)]).map(
+    (sentence, index) => {
+      const lowered = sentence.toLowerCase();
+      const matched = tokens.filter((token) => lowered.includes(token));
+      return {
+        sentence,
+        sentenceIndex: sentences.length > 0 ? index : null,
+        matched,
+        score: matched.length,
+      };
+    },
+  );
   const best = evaluated.sort((left, right) => right.score - left.score)[0];
   if (!best || best.score === 0) {
     const fallbackSentence = sentences[0] ?? String(snippet).trim();
@@ -386,7 +395,9 @@ function attributionScore(attribution = {}) {
     typeof attribution.attribution_confidence === "number"
       ? attribution.attribution_confidence
       : -1;
-  const tokenBonus = Array.isArray(attribution.matched_tokens) ? attribution.matched_tokens.length : 0;
+  const tokenBonus = Array.isArray(attribution.matched_tokens)
+    ? attribution.matched_tokens.length
+    : 0;
   const sentenceBonus = attribution.matched_sentence ? 1 : 0;
   const anchorBonus = attribution.anchor_text ? 1 : 0;
   return confidence * 100 + tokenBonus * 10 + sentenceBonus * 2 + anchorBonus;
@@ -481,7 +492,8 @@ function buildEvidenceRecord({
   const excerpt = item.raw_content ?? item.content ?? "";
   const sourceType = inferSourceType(item.url ?? "", item.title ?? "", excerpt);
   const claimLinks = buildClaimLinks(claims, excerpt, query);
-  const primaryLink = claimLinks.find((link) => link.stance !== "context") ?? claimLinks[0] ?? null;
+  const primaryLink =
+    claimLinks.find((link) => link.stance !== "context") ?? claimLinks[0] ?? null;
   return {
     evidence_id: createId("evidence"),
     run_id: runId,
@@ -822,6 +834,17 @@ export async function gatherEvidence(session, runtime, workItem) {
   thread.execution.gather_status = "gathered";
   thread.execution.gather_rounds += 1;
   thread.execution.last_gathered_at = isoNow();
+
+  const preferredDomains = new Set(
+    session.research_brief?.source_policy?.preferred_domains ?? [],
+  );
+  if (preferredDomains.size > 0) {
+    for (const item of session.evidence) {
+      if (preferredDomains.has(item.domain) && item.quality !== "high") {
+        item.quality = item.quality === "low" ? "medium" : "high";
+      }
+    }
+  }
 
   for (const claimId of thread.claim_ids) {
     const claim = getClaimById(session, claimId);

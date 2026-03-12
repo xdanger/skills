@@ -121,7 +121,19 @@ export function scoreSession(session) {
   const claimCoverageScore = covered.length / highClaims.length;
   const primarySourceScore = resolved.length > 0 ? primaryResolved.length / resolved.length : 0;
   const sourceDiversityScore = Math.min(1, (domains.size + sourceTypes.size) / 6);
-  const contradictionPenalty = unresolvedContradictions.length / highClaims.length;
+  const contradictionWeight = (contradiction) => {
+    const type = contradiction.conflict_type ?? "factual_disagreement";
+    if (type === "factual_disagreement") return 1.0;
+    if (type === "temporal") return 0.7;
+    if (type === "interpretation") return 0.4;
+    if (type === "scope") return 0.25;
+    return 0.5;
+  };
+  const weightedContradictions = unresolvedContradictions.reduce(
+    (sum, item) => sum + contradictionWeight(item),
+    0,
+  );
+  const contradictionPenalty = weightedContradictions / highClaims.length;
   const recencyScore = isTimeSensitiveGoal(session.goal)
     ? session.evidence.some((item) => item.published_at)
       ? 1
@@ -244,7 +256,17 @@ export function advanceStage(session) {
       !hasNonSynthesisWork &&
       !hasQueuedWork(session, "synthesize_session", session.session_id)
     ) {
-      session.stage = openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
+      if (session.research_brief?.auto_synthesize) {
+        queueWorkItem(session, {
+          kind: "synthesize_session",
+          scopeType: "session",
+          scopeId: session.session_id,
+          reason:
+            "Auto-synthesize enabled; producing synthesis without waiting for agent decision.",
+        });
+      } else {
+        session.stage = openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
+      }
     }
     return syncSessionStage(session);
   }
