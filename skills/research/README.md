@@ -160,34 +160,38 @@ The standard is not “remove uncertainty.” The standard is “make uncertaint
 
 ## What Exists Today
 
-This project already has a real runtime under it.
+This project has a real runtime under it.
 
 It is no longer just an idea or a prompt pattern. Today it already has:
 
-- a versioned local session ledger
+- a versioned local session ledger with durable state
+- agent-authored planning as the primary path, with a legacy fallback planner isolated behind an explicit compatibility layer
 - explicit queued work instead of one monolithic run
-- checkpointed provider operations
+- checkpointed provider operations with replay safety
 - separation between claims, evidence, contradictions, and synthesis
-- continuation and rejoin flows
+- typed durable contradictions with conflict classification and resolution tracking
+- evidence freshness metadata (observed_at, last_verified_at)
+- a 5-tier source credibility system for agent judgment, mapped to 3 tiers for runtime scoring
+- continuation, delta plans, and rejoin flows
 - direct-answer oriented synthesis for verification-style work
-- an agent-authored planning path for better agent/runtime separation
+- auto-synthesize option for one-shot research workflows
+- an `awaiting_agent_decision` state that pauses instead of inventing the next step
 
-That means the foundation is real.
-
-It also means the remaining problems are increasingly quality problems rather than structure problems.
+The foundation is real. The remaining problems are increasingly quality problems rather than structure problems.
 
 ## What Still Needs Work
 
 This skill is not “finished deep research.” Not yet.
 
-The biggest remaining gaps are still in research quality:
+The biggest remaining gaps:
 
-- source authority is still partly heuristic
 - evidence attribution is still not audit-grade
 - excerpts can still be noisy
-- the fallback planner is still only partly dynamic
+- state machine transitions lack a formal `transitions.mjs` enforcing legal moves
+- plan approval freeze protection is not yet airtight
+- contradiction resolution workflow is manual, not guided
 
-That is the right kind of incompleteness at this stage. The boundary is getting cleaner; the judgments now need to get sharper.
+That is the right kind of incompleteness at this stage. The boundary is clean; the judgments now need to get sharper.
 
 ## What Should Stay Hard
 

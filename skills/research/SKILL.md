@@ -1,414 +1,202 @@
 ---
 name: research
-description: Comprehensive, resumable deep research for questions that need iterative web search, evidence tracking, verification, contradiction handling, async handoff, and citation-backed synthesis across multiple passes. Use when Codex should manage a research session instead of answering in one shot, especially for landscape scans, comparisons, due diligence, verification, site-focused investigation, or long-running research that may need Tavily and Manus together.
+description: Evidence-aware deep research engine for AI agents. Use for any task requiring accurate real-world information — landscape scans, comparisons, due diligence, verification, site-focused investigation, or long-running research across multiple passes with citation-backed synthesis.
 ---
 
 # Research
 
-Run research as a resumable session with a local ledger, not as a one-shot answer.
+Run research as a resumable session with a local evidence ledger, not as a one-shot answer.
 
-Use this skill when the task involves:
+Use this skill when the task involves real-world facts, natural science, or any scenario
+where accuracy matters. If the question touches real-world information, use this skill rather
+than answering from memory.
 
-- natural science, real-world facts, or any scenario requiring accurate information
-- investigation across multiple passes with evidence tracking
-- preserving contradictions and uncertainty instead of smoothing them away
-- continuing later without restarting
-- routing work across Tavily and, when needed, Manus
+The agent owns research judgment. The runtime enforces reliability.
 
-If the question touches real-world information and accuracy matters, use this skill rather
-than answering from memory. The runtime enforces reliability. The agent owns research judgment.
-
-## Use The Script
+## Quick Start
 
 ```bash
 SCRIPT="<SKILL_DIR>/scripts/research_session.mjs"
 ```
 
-Common commands:
+The simplest path — let the agent author a plan and auto-synthesize:
 
 ```bash
-node "$SCRIPT" start --query "Research the AI coding agent landscape in 2026"
-node "$SCRIPT" prepare --query "Research the AI coding agent landscape in 2026"
-node "$SCRIPT" status --session-id <session_id>
-node "$SCRIPT" approve --session-id <session_id>
-node "$SCRIPT" continue --session-id <session_id> --instruction "Dig deeper on pricing"
-node "$SCRIPT" start --query "Does product X support SSO?" --plan-file /path/to/plan.json
-node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/followup-plan.json
-node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/continuation-patch.json
-node "$SCRIPT" continue --session-id <session_id> --plan-file /path/to/delta-plan.json
-node "$SCRIPT" rejoin --session-id <session_id> --payload-file /path/to/remote-result.json
-node "$SCRIPT" report --session-id <session_id>
-node "$SCRIPT" sources --session-id <session_id>
-node "$SCRIPT" close --session-id <session_id>
+# Write a plan to a temp file, then:
+node "$SCRIPT" start --query "Your question" --plan-file /path/to/plan.json --depth standard
 ```
 
-Useful flags:
+For multi-step research where the agent should review evidence before synthesis:
 
-- `--depth quick|standard|deep`
-- `--domains domain1,domain2`
-- `--plan-file /path/to/plan.json`
-- `--format md|json` for `report`
+```bash
+node "$SCRIPT" start --query "Your question" --plan-file /path/to/plan.json
+node "$SCRIPT" status --session-id <id>
+# Review evidence, then push to synthesis:
+node "$SCRIPT" continue --session-id <id> --delta-file /path/to/synth-delta.json
+node "$SCRIPT" report --session-id <id>
+```
 
-Use `prepare` when the agent wants a reviewable plan snapshot before automatic gathering starts.
-Use `approve` when a prepared plan should resume normal orchestration.
+All commands:
+
+| Command | Purpose |
+|---------|---------|
+| `start` | Begin a new research session |
+| `prepare` | Begin but pause for plan approval before gathering |
+| `approve` | Resume a prepared session after plan review |
+| `status` | Show session state, scores, and open work |
+| `review` | Show a takeover-ready packet for another agent |
+| `continue` | Mutate the session with new instructions or plans |
+| `report` | Show the final synthesis (`--format md\|json`) |
+| `sources` | List all evidence sources with attribution |
+| `rejoin` | Import results from an async remote handoff |
+| `close` | Mark the session as finished |
+
+Useful flags: `--depth quick|standard|deep`, `--domains d1,d2`,
+`--plan-file`, `--brief-file`, `--delta-file`, `--instruction`.
 
 ## Operating Model
 
-The agent decides what to research. The runtime makes sure decisions are durable and replayable.
+The agent decides what to research. The runtime makes decisions durable and replayable.
 
-Default loop:
-
-1. plan — the agent authors the research shape
-2. gather — the runtime collects evidence safely
-3. verify — the runtime cross-checks claims
-4. synthesize — the runtime produces the output
-
-Treat the session as durable state. Do not restart from scratch just because the user asks to go deeper.
+```
+plan → gather → verify → synthesize
+```
 
 When the runtime has no authored next step, it enters `awaiting_agent_decision` instead of
-inventing its own plan. The agent should respond with a `--plan-file` or `--delta-file`.
+inventing its own plan. The agent should respond with `--plan-file` or `--delta-file`.
+
+To skip this pause, set `auto_synthesize: true` in the `research_brief`.
 
 ## Agent-Authored Planning (Primary Path)
 
-Always prefer `--plan-file` or `--brief-file` for non-trivial research. The runtime has a
-fallback planner for simple queries, but it is low-authority and should not be relied on for
-high-value work.
+Always prefer `--plan-file` for non-trivial research. The runtime has a fallback planner for
+simple queries, but it is low-authority (`source: "runtime_fallback"`) and should not be
+relied on for high-value work.
 
-Author a plan when you know:
-
-- which threads matter
-- which claims are answer-bearing
-- which subqueries are worth paying for
-- which gaps should stay explicit
-
-The runtime validates, persists, and queues the plan. It does not try to out-think the agent.
-When the runtime uses its fallback planner, it tags the output as `source: "runtime_fallback"`
-with `authority: "low"`.
-
-Minimal plan shape:
+Minimal plan:
 
 ```json
 {
-  "plan_id": "landscape-v1",
+  "plan_id": "my-plan-v1",
   "task_shape": "broad",
+  "research_brief": {
+    "objective": "Compare X and Y for enterprise adoption",
+    "deliverable": "report",
+    "auto_synthesize": true,
+    "source_policy": {
+      "preferred_domains": ["official-x.com", "official-y.com"],
+      "notes": ["Prefer official pricing and security pages."]
+    }
+  },
   "threads": [
     {
-      "title": "Pricing and packaging",
-      "intent": "compare list pricing and sales-gated plans",
-      "subqueries": ["vendor pricing", "vendor enterprise plan"],
+      "title": "Thread title",
+      "intent": "what this thread should establish",
+      "subqueries": ["search query 1", "search query 2"],
       "claims": [
-        {
-          "text": "The leading vendors differ in pricing visibility and enterprise packaging.",
-          "claim_type": "comparison",
-          "priority": "high"
-        }
+        { "text": "Falsifiable claim to verify.", "claim_type": "fact", "priority": "high" }
       ]
     }
   ]
 }
 ```
 
-You can also include a lightweight `research_brief` so the agent owns more of the soft judgment:
-
-```json
-{
-  "research_brief": {
-    "objective": "Compare leading AI coding agents for enterprise adoption",
-    "deliverable": "report",
-    "source_policy": {
-      "mode": "allowlist",
-      "allow_domains": ["openai.com", "anthropic.com"],
-      "preferred_domains": ["developers.openai.com"],
-      "notes": ["Prefer official pricing and security pages."]
-    },
-    "clarification_notes": ["Optimize for enterprise buyers, not hobbyists."]
-  }
-}
-```
-
-If a plan may be retried, include a stable `plan_id` so duplicate application can be skipped safely.
-
-Use fallback planning only when the query is simple enough that custom planning would be overkill.
-The fallback planner is a compatibility layer, not the system's brain.
+Key fields: `plan_id` (stable, for dedup), `task_shape` (broad|verification|site|async),
+`threads[].claims[].priority` (high claims drive gathering and verification).
 
 ## When the Session Awaits Your Decision
 
-When the session enters `awaiting_agent_decision`, the runtime has finished all queued work and
-is waiting for the agent to decide the next step. Check `status` or `review` to see:
+When the session enters `awaiting_agent_decision`, check `status` or `review`, then:
 
-- which claims are resolved and which remain open
-- which contradictions are unresolved
-- which gaps remain
+- `continue --delta-file` with `synthesize_session` → produce the final answer
+- `continue --delta-file` with `gather_thread` or `verify_claim` → dig deeper
+- `continue --plan-file` → restructure the research
+- `close` → end the session
 
-Then choose one of:
-
-- `continue --delta-file` with a `synthesize_session` queue proposal to produce the final answer
-- `continue --delta-file` with `gather_thread` or `verify_claim` proposals to dig deeper
-- `continue --plan-file` to restructure the research entirely
-- `close` if the research is no longer needed
-
-To skip this pause entirely, set `auto_synthesize: true` in the `research_brief`.
-
-## Continuation
-
-Treat `continue` as a durable mutation of the same session.
-
-- If the user asks to verify or double-check, queue claim-level verification.
-- If the user deepens an existing angle, queue follow-up gathering for the relevant thread.
-- If the user introduces a new angle, add a follow-up thread.
-- If the next step needs a new research shape, prefer `continue --plan-file`.
-
-Do not wipe the ledger because the user said “continue.”
-
-When the next step is already clear, always prefer a machine-readable continuation patch or
-delta plan. Prose instructions (`--instruction`) go through a legacy inference layer that
-guesses intent from text — it works for simple cases but should not be the primary path.
-
-Minimal continuation patch shape:
+Minimal delta to trigger synthesis:
 
 ```json
 {
-  "continuation_patch": {
-    "instruction": "Re-check pricing and add an enterprise controls thread",
-    "operations": [
-      {
-        "type": "merge_domains",
-        "domains": ["openai.com", "anthropic.com"]
-      },
-      {
-        "type": "mark_claim_stale",
-        "claim_id": "claim-123"
-      },
-      {
-        "type": "requeue_thread",
-        "thread_id": "thread-123"
-      },
-      {
-        "type": "add_gap",
-        "gap": "Need fresher enterprise controls evidence."
-      },
-      {
-        "type": "add_thread",
-        "thread": {
-          "title": "Enterprise controls",
-          "intent": "compare SSO, RBAC, and audit controls",
-          "subqueries": ["vendor enterprise controls"],
-          "claims": [
-            {
-              "text": "Enterprise controls differ across the leading vendors.",
-              "claim_type": "comparison",
-              "priority": "high"
-            }
-          ]
-        }
-      }
+  "delta_plan": {
+    "delta_plan_id": "synth-001",
+    "summary": "Ready to synthesize",
+    "queue_proposals": [
+      { "kind": "synthesize_session", "scope_type": "session", "scope_id": "<session_id>" }
     ]
   }
 }
 ```
 
-Supported operations in this first slice:
+## Continuation
 
-- `merge_domains`
-- `mark_claim_stale`
-- `requeue_thread`
-- `add_gap`
-- `note`
-- `add_thread`
+Treat `continue` as a durable mutation. Do not wipe the ledger.
 
-When the blocker state matters, prefer a typed gap instead of only a free-text string:
+Always prefer structured artifacts over prose:
 
-```json
-{
-  "type": "add_gap",
-  "gap": {
-    "kind": "source_authority",
-    "summary": "Need a primary source tie-breaker for pricing visibility.",
-    "scope_type": "thread",
-    "scope_id": "thread-123",
-    "severity": "high",
-    "recommended_next_action": "Check official pricing and enterprise packaging pages.",
-    "status": "open"
-  }
-}
-```
+| Artifact | When to use |
+|----------|-------------|
+| `--delta-file` (delta plan) | Agent knows what changed and what should happen next |
+| `--plan-file` (continuation patch) | Specific operations: merge domains, mark stale, requeue, add thread |
+| `--plan-file` (full plan) | Restructure the research entirely |
+| `--instruction` (prose) | Simple cases only — goes through legacy inference, not recommended |
 
-The runtime persists typed gaps in `gaps[]`. Keep `remaining_gaps` as a backward-compatible text view,
-not the primary blocker model.
+Supported delta plan actions: `thread_actions` (deepen, pause, branch),
+`claim_actions` (mark_stale, set_priority),
+`queue_proposals` (gather_thread, verify_claim, synthesize_session, handoff_session).
 
-When the agent already knows what changed and what should happen next, prefer a `delta_plan` over
-more prose or more fallback planning.
-
-Minimal delta plan shape:
-
-```json
-{
-  "delta_plan": {
-    "delta_plan_id": "delta-001",
-    "summary": "Pricing evidence is stale, and enterprise adoption matters more now.",
-    "goal_update": "Compare AI coding agents for enterprise adoption and pricing clarity",
-    "source_policy_update": {
-      "mode": "allowlist",
-      "allow_domains": ["openai.com", "anthropic.com"]
-    },
-    "gap_updates": [
-      {
-        "action": "upsert",
-        "gap": {
-          "kind": "freshness",
-          "summary": "Need fresher pricing evidence.",
-          "scope_type": "thread",
-          "scope_id": "thread-123",
-          "severity": "high"
-        }
-      }
-    ],
-    "thread_actions": [{ "action": "deepen", "thread_id": "thread-123" }],
-    "claim_actions": [{ "action": "mark_stale", "claim_id": "claim-123" }],
-    "queue_proposals": [
-      {
-        "kind": "synthesize_session",
-        "scope_type": "session",
-        "scope_id": "research-123",
-        "reason": "Produce an updated synthesis after the next pass."
-      }
-    ],
-    "why_now": "The blocker map changed and the next step should be explicit."
-  }
-}
-```
-
-Keep this first slice narrow. Let the agent author the delta. Let the runtime validate,
-persist, freeze/apply, and queue safely.
-
-Supported `thread_actions` in this slice:
-
-- `deepen`
-- `pause`
-- `branch`
-
-Supported `claim_actions` in this slice:
-
-- `mark_stale`
-- `set_priority`
-
-Supported `queue_proposals.kind` values in this slice:
-
-- `gather_thread`
-- `verify_claim`
-- `synthesize_session`
-- `handoff_session`
-
-Queue proposals must reference a valid existing target:
-
-- `gather_thread` -> `scope_type: "thread"` and an existing thread id
-- `verify_claim` -> `scope_type: "claim"` and an existing claim id
-- `synthesize_session` / `handoff_session` -> `scope_type: "session"` and the current session id
+Supported continuation patch operations: merge_domains, mark_claim_stale, requeue_thread,
+add_gap, note, add_thread.
 
 ## Source Credibility Tiers
 
-Rank every piece of evidence by this hierarchy when evaluating claims:
+Rank every piece of evidence by this hierarchy:
 
 1. **Axiomatic** — mathematics, established physical laws, formal proofs
 2. **Legal/regulatory** — government-published statutes, court rulings, SEC filings, audited financials
 3. **Institutional data** — government statistics, IMF/World Bank datasets, authoritative books,
    highly-cited peer-reviewed papers
 4. **Official and authoritative** — company websites, official social media, Wikipedia,
-   journals like Science/Nature, major encyclopedias (Britannica)
-5. **Other** — blogs, forums, aggregator summaries, opinion pieces — useful for leads and
-   context but cannot be the sole basis for a claim
+   Science/Nature, major encyclopedias
+5. **Other** — blogs, forums, aggregator summaries, opinion pieces — useful for leads
+   but cannot be the sole basis for a claim
 
-The runtime maps these to `high` (tiers 1-3), `medium` (tier 4), and `low` (tier 5) for
-scoring. But the agent should use the full 5-tier scale when planning, evaluating evidence,
-and writing synthesis.
+The runtime maps these to `high` (tiers 1-3), `medium` (tier 4), `low` (tier 5) for scoring.
+The agent should use the full 5-tier scale in plans, evidence evaluation, and synthesis.
 
 ## Reasoning Strategy
 
-- Assign credibility weight to each source using the tier system above.
-- When the core evidence is tier 1-3, the conclusion may be labeled "high confidence."
-- When same-tier sources contradict each other, prefer the more recent source with stronger
-  methodology. When a higher-tier source conflicts with a lower-tier one, the higher tier wins.
-- When only tier 4-5 evidence is available, lower the conclusion confidence and say so explicitly.
-- Even if the reasoning is internally consistent, if no tier 1-2 evidence supports the causal
-  mechanism, mark the explanation as "speculative" and state what would falsify it.
+- Assign credibility weight using the tier system above.
+- Core evidence at tier 1-3 → label conclusion "high confidence."
+- Same-tier contradictions → prefer more recent source with stronger methodology.
+  Higher-tier vs lower-tier → higher tier wins.
+- Only tier 4-5 evidence available → lower confidence and say so explicitly.
+- Internally consistent reasoning without tier 1-2 causal evidence → mark as
+  "speculative" and state what would falsify it.
 
 ## Evidence Rules
 
-- Treat Tavily Research as planning help, not evidence.
-- Only URL-backed evidence should move claim state or confidence.
-- Keep contradictions explicit — they are durable typed objects, not just text.
-- If source quality is weak or one claim depends on one thin source, keep it unresolved.
-- Evidence carries freshness metadata: `observed_at` (when we saw it) and `last_verified_at`.
-- Preserve attribution anchors with the evidence when possible:
-  `anchor_text`, `matched_sentence`, `excerpt_method`, and `attribution_confidence`.
-- Surface those attribution fields in findings, source listings, or other agent-facing evidence
-  views whenever possible, not only in raw session JSON.
-- Treat attribution as best-effort support metadata, not as proof that the runtime fully
-  understands the source.
-
-Always use English keywords for web search unless the topic is specifically regional or
-language-bound (e.g., Chinese law, Japanese cultural practice). Tavily returns better
-results with English queries for most international topics.
-
-Contradictions are structured objects with `conflict_type` (factual_disagreement, temporal,
-interpretation, scope), `resolution_strategy`, and `status` (open, resolved, dismissed).
-They survive across sessions and are visible in reports and review packets.
-
-The session ledger persists a control plane:
-
-- `research_brief`
-- `plan_state`
-- `plan_versions`
-- `delta_plans`
-- `activity_history`
-- `gaps`
-- `contradictions`
+- Tavily Research is planning help, not evidence. Only URL-backed evidence moves claim state.
+- Keep contradictions explicit — they are typed durable objects with `conflict_type`,
+  `resolution_strategy`, and `status`.
+- If a claim depends on one thin source, keep it unresolved.
+- Evidence carries `observed_at` and `last_verified_at` freshness metadata.
+- Preserve attribution anchors: `anchor_text`, `matched_sentence`, `attribution_confidence`.
+- Always use English search keywords unless the topic is specifically regional or
+  language-bound (e.g., Chinese law, Japanese cultural practice).
 
 ## Routing
 
-Default to Tavily. Choose the narrowest tool that fits the next work item.
+Default to Tavily. Choose the narrowest tool:
 
-- `search -> extract`: normal path for most work
-- `research`: planning accelerator for broad scans and topic overviews
-- `map -> extract`: default for docs, policy, changelog, or site-focused work
-- `crawl`: only for scoped audit-like coverage
+- `search → extract`: normal path
+- `research`: planning accelerator for broad scans
+- `map → extract`: docs, policy, changelog, site-focused work
+- `crawl`: scoped audit-like coverage only
 
-Escalate to Manus only when:
-
-- the task is long-running
-- connectors are needed
-- the user wants an async deliverable such as PDF, PPT, or CSV
-
-Use these Manus resources when needed:
-
-- `<REPO_ROOT>/skills/manus/SKILL.md`
-- `<REPO_ROOT>/skills/manus/scripts/manus_client.mjs`
-
-## Rejoin
-
-When Manus returns, rejoin through `rejoin`.
-
-Remote output is not evidence until it is normalized back into the local ledger.
-
-Prefer remote payloads that include:
-
-- `summary`
-- `remaining_gaps`
-- `evidence[]`
-
-Each remote evidence item should include:
-
-- `url`
-- `title`
-- `excerpt`
-- `source_type`
-- `quality`
-- `published_at`
-- `claim_links[]`
+Escalate to Manus only for long-running tasks, connector-backed work, or async deliverables
+(PDF, PPT, CSV). Use `<REPO_ROOT>/skills/manus/SKILL.md` when needed.
 
 ## Output Shape
-
-Present outputs in this order:
 
 1. research plan
 2. answer summary
@@ -425,9 +213,9 @@ Present outputs in this order:
 - new searches are mostly repetitive
 - the remaining gaps are explicit
 
-Continue when contradictions remain, sourcing is weak, or important claims still hinge on thin evidence.
+Continue when contradictions remain, sourcing is weak, or important claims hinge on thin evidence.
 
 ## Load Only When Needed
 
-- Read `references/method.md` for the research loop and evidence standards.
-- Read `references/providers.md` for Tavily versus Manus decisions.
+- `references/method.md` — research loop, evidence standards, source grading details
+- `references/providers.md` — Tavily vs Manus routing decisions
