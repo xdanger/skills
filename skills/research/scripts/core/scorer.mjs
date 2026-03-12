@@ -256,7 +256,8 @@ export function advanceStage(session) {
       !hasNonSynthesisWork &&
       !hasQueuedWork(session, "synthesize_session", session.session_id)
     ) {
-      if (session.research_brief?.auto_synthesize) {
+      const hasHighSeverityBlockers = openGaps.some((gap) => gap.severity === "high");
+      if (session.research_brief?.auto_synthesize && !hasHighSeverityBlockers) {
         queueWorkItem(session, {
           kind: "synthesize_session",
           scopeType: "session",
@@ -265,7 +266,8 @@ export function advanceStage(session) {
             "Auto-synthesize enabled; producing synthesis without waiting for agent decision.",
         });
       } else {
-        session.stage = openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
+        session.stage =
+          openGaps.length > 0 ? "blocked" : "awaiting_agent_decision";
       }
     }
     return syncSessionStage(session);

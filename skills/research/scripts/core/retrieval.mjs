@@ -840,8 +840,9 @@ export async function gatherEvidence(session, runtime, workItem) {
   );
   if (preferredDomains.size > 0) {
     for (const item of session.evidence) {
-      if (preferredDomains.has(item.domain) && item.quality !== "high") {
-        item.quality = item.quality === "low" ? "medium" : "high";
+      if (preferredDomains.has(item.domain)) {
+        if (item.quality === "low") item.quality = "medium";
+        else if (item.quality === "medium") item.quality = "high";
       }
     }
   }
