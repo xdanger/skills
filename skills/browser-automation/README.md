@@ -1,6 +1,6 @@
-# `browser-automation`
+# browser-automation
 
-`browser-automation` is a unified browser automation skill.
+Unified browser automation for AI agents.
 
 Its core idea is simple:
 
@@ -72,3 +72,11 @@ For the full architecture and maintenance notes, read:
 - [ARCH.md](ARCH.md)
 - [agent-browser upstream skill](https://github.com/vercel-labs/agent-browser/blob/main/skills/agent-browser/SKILL.md)
 - [playwright-cli upstream skill](https://github.com/microsoft/playwright-cli/blob/main/skills/playwright-cli/SKILL.md)
+
+## Usage
+
+```bash
+npx skills add https://github.com/xdanger/skills --skill browser-automation
+```
+
+Requires `agent-browser` and/or `playwright-cli` to be available. See upstream docs for installation.
