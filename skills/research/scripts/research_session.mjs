@@ -1,6 +1,6 @@
 /* global process */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -57,7 +57,11 @@ function isMainModule() {
   if (!entry) {
     return false;
   }
-  return import.meta.url === pathToFileURL(entry).href;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return import.meta.url === pathToFileURL(entry).href;
+  }
 }
 
 function parseCsvList(value) {

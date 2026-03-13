@@ -436,6 +436,14 @@ export function summarizeSession(session) {
         resolution_strategy: item.resolution_strategy ?? "",
         status: item.status,
       })),
+    synthesis: session.final_answer.answer_summary
+      ? {
+          answer_summary: session.final_answer.answer_summary,
+          key_findings: session.final_answer.key_findings,
+          citations: session.final_answer.citations,
+          generated_at: session.final_answer.generated_at ?? null,
+        }
+      : null,
     recent_activity: session.activity_history.slice(-5),
     updated_at: session.updated_at,
   };
