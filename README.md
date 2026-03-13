@@ -4,12 +4,12 @@ Personal collection of [Claude Code Skills](https://docs.anthropic.com/en/docs/c
 
 ## Skills
 
-| Skill | Description |
-| --- | --- |
-| [git-commit](skills/git-commit) | Conventional Commits + Gitmoji 标准化原子提交 |
-| [research](skills/research) | 证据驱动的深度研究引擎，支持多轮搜索、来源评级与引用综合 |
+| Skill                                           | Description                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------- |
+| [git-commit](skills/git-commit)                 | Conventional Commits + Gitmoji 标准化原子提交                 |
+| [research](skills/research)                     | 证据驱动的深度研究引擎，支持多轮搜索、来源评级与引用综合      |
 | [browser-automation](skills/browser-automation) | 统一浏览器自动化，支持 agent-browser 与 playwright-cli 双路径 |
-| [manus](skills/manus) | 异步任务代理，适用于 PDF/PPT/CSV 生成等超出本地工具能力的任务 |
+| [manus](skills/manus)                           | 异步任务代理，适用于 PDF/PPT/CSV 生成等超出本地工具能力的任务 |
 
 ## Usage
 
