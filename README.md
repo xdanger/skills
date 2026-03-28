@@ -15,11 +15,11 @@ Personal collection of [Claude Code Skills](https://docs.anthropic.com/en/docs/c
 ## Usage
 
 ```bash
-npx skills add xdanger/skills --skill git-commit
-npx skills add xdanger/skills --skill research
-npx skills add xdanger/skills --skill browser-automation
-npx skills add xdanger/skills --skill manus
-npx skills add xdanger/skills --skill video-generation
+npx skills add https://github.com/xdanger/skills --skill git-commit
+npx skills add https://github.com/xdanger/skills --skill research
+npx skills add https://github.com/xdanger/skills --skill browser-automation
+npx skills add https://github.com/xdanger/skills --skill manus
+npx skills add https://github.com/xdanger/skills --skill video-generation
 ```
 
 ## Structure
