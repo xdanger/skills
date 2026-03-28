@@ -101,7 +101,7 @@ Task is async. Poll until `status == "succeeded"`, then download video URL (vali
 |-----------|--------|---------|-------|
 | `model` | `doubao-seedance-2-0-260128`, `doubao-seedance-2-0-fast-260128` | fast | Required |
 | `resolution` | `480p`, `720p` | `720p` | Max 720p |
-| `ratio` | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `adaptive` | `adaptive` | |
+| `ratio` | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `adaptive` | API: `adaptive`; script: `16:9` | |
 | `duration` | 4–15 (int), or -1 (auto) | 5 | Seconds |
 | `generate_audio` | true/false | true | Sync audio/speech/music generation |
 | `watermark` | true/false | — | — |

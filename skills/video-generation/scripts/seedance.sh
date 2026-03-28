@@ -31,6 +31,14 @@
 
 set -euo pipefail
 
+# --- Dependency check ---
+for cmd in curl jq; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "❌ Required command not found: $cmd" >&2
+    exit 1
+  fi
+done
+
 DEFAULT_BASE_URL="https://ark.cn-beijing.volces.com"
 BASE_URL="${SEEDANCE_BASE_URL:-$DEFAULT_BASE_URL}"
 MODEL="${SEEDANCE_MODEL:-doubao-seedance-2-0-fast-260128}"
@@ -52,28 +60,36 @@ REF_IMAGES=()
 REF_VIDEOS=()
 REF_AUDIOS=()
 
+# --- Helper: require argument value ---
+require_arg() {
+  if [[ $# -lt 2 || -z "$2" ]]; then
+    echo "❌ Option $1 requires an argument." >&2
+    exit 1
+  fi
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --image)       FIRST_IMAGE="$2"; shift 2 ;;
-    --last-image)  LAST_IMAGE="$2"; shift 2 ;;
-    --ref-image)   REF_IMAGES+=("$2"); shift 2 ;;
-    --ref-video)   REF_VIDEOS+=("$2"); shift 2 ;;
-    --ref-audio)   REF_AUDIOS+=("$2"); shift 2 ;;
-    --model)       MODEL="$2"; shift 2 ;;
-    --ratio)       RATIO="$2"; shift 2 ;;
-    --duration)    DURATION="$2"; shift 2 ;;
-    --resolution)  RESOLUTION="$2"; shift 2 ;;
-    --audio)       GENERATE_AUDIO="$2"; shift 2 ;;
-    --watermark)   WATERMARK=true; shift ;;
-    --web-search)  WEB_SEARCH=true; shift ;;
-    --api-key)     API_KEY="$2"; shift 2 ;;
-    --base-url)    BASE_URL="$2"; shift 2 ;;
-    --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
-    --max-wait)    MAX_WAIT="$2"; shift 2 ;;
-    --download)    DOWNLOAD_DIR="$2"; shift 2 ;;
-    -*)            echo "Unknown option: $1" >&2; exit 1 ;;
-    *)             PROMPT="$1"; shift ;;
+    --image)         require_arg "$1" "${2:-}"; FIRST_IMAGE="$2"; shift 2 ;;
+    --last-image)    require_arg "$1" "${2:-}"; LAST_IMAGE="$2"; shift 2 ;;
+    --ref-image)     require_arg "$1" "${2:-}"; REF_IMAGES+=("$2"); shift 2 ;;
+    --ref-video)     require_arg "$1" "${2:-}"; REF_VIDEOS+=("$2"); shift 2 ;;
+    --ref-audio)     require_arg "$1" "${2:-}"; REF_AUDIOS+=("$2"); shift 2 ;;
+    --model)         require_arg "$1" "${2:-}"; MODEL="$2"; shift 2 ;;
+    --ratio)         require_arg "$1" "${2:-}"; RATIO="$2"; shift 2 ;;
+    --duration)      require_arg "$1" "${2:-}"; DURATION="$2"; shift 2 ;;
+    --resolution)    require_arg "$1" "${2:-}"; RESOLUTION="$2"; shift 2 ;;
+    --audio)         require_arg "$1" "${2:-}"; GENERATE_AUDIO="$2"; shift 2 ;;
+    --watermark)     WATERMARK=true; shift ;;
+    --web-search)    WEB_SEARCH=true; shift ;;
+    --api-key)       require_arg "$1" "${2:-}"; API_KEY="$2"; shift 2 ;;
+    --base-url)      require_arg "$1" "${2:-}"; BASE_URL="$2"; shift 2 ;;
+    --poll-interval) require_arg "$1" "${2:-}"; POLL_INTERVAL="$2"; shift 2 ;;
+    --max-wait)      require_arg "$1" "${2:-}"; MAX_WAIT="$2"; shift 2 ;;
+    --download)      require_arg "$1" "${2:-}"; DOWNLOAD_DIR="$2"; shift 2 ;;
+    -*)              echo "Unknown option: $1" >&2; exit 1 ;;
+    *)               PROMPT="$1"; shift ;;
   esac
 done
 
@@ -92,7 +108,36 @@ if [[ -z "$PROMPT" ]]; then
 fi
 
 if [[ -z "$API_KEY" ]]; then
-  echo "Error: Set SEEDANCE_API_KEY or use --api-key" >&2
+  echo "❌ Set SEEDANCE_API_KEY or use --api-key" >&2
+  exit 1
+fi
+
+# --- Input validation ---
+HAS_FRAME=$([[ -n "$FIRST_IMAGE" || -n "$LAST_IMAGE" ]] && echo true || echo false)
+HAS_REF=$([[ ${#REF_IMAGES[@]} -gt 0 || ${#REF_VIDEOS[@]} -gt 0 || ${#REF_AUDIOS[@]} -gt 0 ]] && echo true || echo false)
+
+# --last-image requires --image
+if [[ -n "$LAST_IMAGE" && -z "$FIRST_IMAGE" ]]; then
+  echo "❌ --last-image requires --image (first frame)." >&2
+  exit 1
+fi
+
+# First-frame mode and reference mode are mutually exclusive
+if [[ "$HAS_FRAME" == "true" && "$HAS_REF" == "true" ]]; then
+  echo "❌ Cannot mix first/last frame (--image/--last-image) with reference inputs (--ref-image/--ref-video/--ref-audio)." >&2
+  echo "   These are mutually exclusive modes." >&2
+  exit 1
+fi
+
+# Audio cannot be used alone — must include at least one image or video
+if [[ ${#REF_AUDIOS[@]} -gt 0 && ${#REF_IMAGES[@]} -eq 0 && ${#REF_VIDEOS[@]} -eq 0 && -z "$FIRST_IMAGE" ]]; then
+  echo "❌ --ref-audio cannot be used alone. Include at least one image (--ref-image/--image) or video (--ref-video)." >&2
+  exit 1
+fi
+
+# --web-search is text-to-video only
+if [[ "$WEB_SEARCH" == "true" && ("$HAS_FRAME" == "true" || "$HAS_REF" == "true") ]]; then
+  echo "❌ --web-search is only supported for pure text-to-video. Remove image/video/audio inputs." >&2
   exit 1
 fi
 
@@ -139,7 +184,7 @@ if [[ -n "$FIRST_IMAGE" && -n "$LAST_IMAGE" ]]; then
   CONTENT=$(echo "$CONTENT" | jq --arg u "$LAST_IMAGE" \
     '. + [{"type":"image_url","image_url":{"url":$u},"role":"last_frame"}]')
 elif [[ -n "$FIRST_IMAGE" ]]; then
-  # First frame mode (all models)
+  # First frame mode (2.0 only, validated above)
   CONTENT=$(echo "$CONTENT" | jq --arg u "$FIRST_IMAGE" \
     '. + [{"type":"image_url","image_url":{"url":$u},"role":"first_frame"}]')
 else
