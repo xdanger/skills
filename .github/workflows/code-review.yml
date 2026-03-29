@@ -3,10 +3,6 @@ name: Code Review
 on:
   pull_request:
     types: [opened, ready_for_review, reopened, synchronize]
-  workflow_call:
-    secrets:
-      ANTHROPIC_API_KEY:
-        required: true
 
 permissions:
   actions: read
