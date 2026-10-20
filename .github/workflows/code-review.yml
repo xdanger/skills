@@ -18,10 +18,8 @@ jobs:
       !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor != 'dependabot[bot]'
-    uses: xdanger/xdanger/.github/workflows/code-review.yml@v1
+    uses: xdanger/xdanger/.github/workflows/code-review.yml@v2
     with:
       pr_number: ${{ github.event.pull_request.number }}
       is_draft: ${{ github.event.pull_request.draft }}
       head_repo_full_name: ${{ github.event.pull_request.head.repo.full_name }}
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
